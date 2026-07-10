@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from "react";
+import React, { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import {
   Music,
@@ -12,50 +12,6 @@ import {
   Calendar
 } from "lucide-react";
 
-declare global {
-  interface Window {
-    Calendly?: any;
-  }
-}
-
-function CalendlyInlineWidget() {
-  const containerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const loadWidget = () => {
-      if (window.Calendly && containerRef.current) {
-        containerRef.current.innerHTML = "";
-        window.Calendly.initInlineWidget({
-          url: "https://calendly.com/zane-luperconsulting?primary_color=2e4270",
-          parentElement: containerRef.current,
-          prefill: {},
-          utm: {}
-        });
-      }
-    };
-
-    if (window.Calendly) {
-      loadWidget();
-    } else {
-      const interval = setInterval(() => {
-        if (window.Calendly) {
-          loadWidget();
-          clearInterval(interval);
-        }
-      }, 200);
-      return () => clearInterval(interval);
-    }
-  }, []);
-
-  return (
-    <div 
-      ref={containerRef} 
-      className="w-full bg-white rounded-sm border border-[#11161B]/10 overflow-hidden shadow-sm"
-      style={{ minWidth: "320px", height: "700px" }}
-    />
-  );
-}
-
 export default function App() {
   // Mobile menu display state
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -66,16 +22,6 @@ export default function App() {
       el.scrollIntoView({ behavior: "smooth" });
     }
     setIsMobileMenuOpen(false);
-  };
-
-  const openCalendly = () => {
-    if (window.Calendly) {
-      window.Calendly.initPopupWidget({
-        url: "https://calendly.com/zane-luperconsulting?primary_color=2e4270"
-      });
-    } else {
-      window.open("https://calendly.com/zane-luperconsulting?primary_color=2e4270", "_blank");
-    }
   };
 
   return (
@@ -104,14 +50,16 @@ export default function App() {
 
           {/* CTA Header Button */}
           <div className="hidden md:flex items-center">
-            <button
-              onClick={openCalendly}
+            <a
+              href="https://calendly.com/zane-luperconsulting/30min"
+              target="_blank"
+              rel="noopener noreferrer"
               className="bg-[#1D2A44] hover:bg-[#C27D38] text-white px-7 py-3 tracking-widest uppercase font-serif text-xs transition-colors duration-300 font-semibold shadow-sm rounded-sm flex items-center gap-1.5"
               id="cta-head-btn"
             >
               <Calendar size={13} />
               <span>BOOK INTRO CALL</span>
-            </button>
+            </a>
           </div>
 
           {/* Mobile Hamburger Toggle */}
@@ -142,10 +90,16 @@ export default function App() {
             <button onClick={() => scrollToSection("whos-it-for-sec")} className="text-left py-2 hover:text-[#C27D38] border-b border-[#11161B]/5">Who It's For</button>
             <button onClick={() => scrollToSection("rates-sec")} className="text-left py-2 hover:text-[#C27D38] border-b border-[#11161B]/5">Rates</button>
             <button onClick={() => scrollToSection("studio-sec")} className="text-left py-2 hover:text-[#C27D38] border-b border-[#11161B]/5">The Studio</button>
-            <button onClick={() => { setIsMobileMenuOpen(false); openCalendly(); }} className="bg-[#1D2A44] text-white text-center py-4 text-xs tracking-widest font-bold inline-block hover:bg-[#C27D38] transition-colors rounded-sm flex items-center justify-center gap-1.5">
+            <a
+              href="https://calendly.com/zane-luperconsulting/30min"
+              target="_blank"
+              rel="noopener noreferrer"
+              onClick={() => setIsMobileMenuOpen(false)}
+              className="bg-[#1D2A44] text-white text-center py-4 text-xs tracking-widest font-bold inline-block hover:bg-[#C27D38] transition-colors rounded-sm flex items-center justify-center gap-1.5"
+            >
               <Calendar size={14} />
               <span>BOOK FREE INTRO CALL</span>
-            </button>
+            </a>
           </motion.div>
         )}
       </AnimatePresence>
@@ -167,17 +121,19 @@ export default function App() {
             
             {/* Conversion CTA Card */}
             <div className="w-full max-w-xl bg-white p-6 md:p-8 border border-[#11161B]/10 rounded-sm shadow-sm flex flex-col items-start gap-4 mt-2" id="hero-cta-card">
-              <button
-                onClick={openCalendly}
+              <a
+                href="https://calendly.com/zane-luperconsulting/30min"
+                target="_blank"
+                rel="noopener noreferrer"
                 className="w-full md:w-auto bg-[#C27D38] hover:bg-[#C27D38]/90 text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-md flex items-center justify-center gap-2 group"
                 id="hero-calendly-btn"
               >
                 <Calendar size={14} />
                 <span>Book a Free Intro Call</span>
                 <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
-              </button>
+              </a>
               <p className="text-xs text-[#11161B]/60 leading-relaxed mt-1">
-                Pick a time that works for you, and I'll call you then. 15 minutes, no pressure — we'll talk about your goals and whether we're a good fit.
+                Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
               </p>
             </div>
           </div>
@@ -394,17 +350,19 @@ export default function App() {
 
           {/* Mid-page Calendly button */}
           <div className="mt-12 flex flex-col items-center justify-center gap-4">
-            <button
-              onClick={openCalendly}
+            <a
+              href="https://calendly.com/zane-luperconsulting/30min"
+              target="_blank"
+              rel="noopener noreferrer"
               className="bg-[#C27D38] hover:bg-[#C27D38]/90 text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-sm flex items-center justify-center gap-2 group"
               id="mid-calendly-btn"
             >
               <Calendar size={14} />
               <span>Book a Free Intro Call</span>
               <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-            </button>
+            </a>
             <p className="text-xs text-[#11161B]/60 max-w-md">
-              Pick a time that works for you, and I'll call you then. 15 minutes, no pressure — we'll talk about your goals and whether we're a good fit.
+              Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
             </p>
           </div>
         </div>
@@ -470,17 +428,19 @@ export default function App() {
 
           {/* Calendly Button in rates */}
           <div className="mt-8 flex flex-col items-center justify-center gap-4">
-            <button
-              onClick={openCalendly}
+            <a
+              href="https://calendly.com/zane-luperconsulting/30min"
+              target="_blank"
+              rel="noopener noreferrer"
               className="bg-[#C27D38] hover:bg-[#C27D38]/90 text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-sm flex items-center justify-center gap-2 group"
               id="rates-calendly-btn"
             >
               <Calendar size={14} />
               <span>Book a Free Intro Call</span>
               <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-            </button>
+            </a>
             <p className="text-xs text-[#11161B]/60 max-w-md">
-              Pick a time that works for you, and I'll call you then. 15 minutes, no pressure — we'll talk about your goals and whether we're a good fit.
+              Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
             </p>
           </div>
         </div>
@@ -537,13 +497,26 @@ export default function App() {
           <div className="text-center mb-12 max-w-2xl mx-auto">
             <h2 className="font-serif text-4xl md:text-5xl tracking-wide text-white uppercase font-normal mb-6">READY TO BEGIN?</h2>
             <p className="text-sm md:text-base text-white/70 font-light leading-relaxed mb-8">
-              Pick a time that works for you directly below. 15 minutes, no pressure — we'll talk about your goals and whether we're a good fit. You can also reach out via email or phone.
+              Pick a time that works for you, and we'll talk about your goals and whether we're a good fit. 15 minutes, no pressure. You can also reach out directly via email or phone.
             </p>
-          </div>
 
-          {/* Embedded Calendly Inline Widget */}
-          <div className="mb-16">
-            <CalendlyInlineWidget />
+            {/* Footer Calendly Trigger */}
+            <div className="flex flex-col items-center justify-center gap-4 mb-16">
+              <a
+                href="https://calendly.com/zane-luperconsulting/30min"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="bg-[#C27D38] hover:bg-[#C27D38]/90 text-white font-medium text-xs tracking-widest uppercase px-10 py-5 duration-300 transition-colors cursor-pointer rounded-sm shadow-lg flex items-center justify-center gap-2 group"
+                id="footer-calendly-btn"
+              >
+                <Calendar size={16} />
+                <span>Book a Free Intro Call</span>
+                <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+              </a>
+              <p className="text-xs text-white/60 max-w-md">
+                Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
+              </p>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto" id="contact-cards-container">
