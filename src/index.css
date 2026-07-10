@@ -1,0 +1,38 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-display: "Cinzel", Georgia, serif;
+  --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
+
+  --color-soft-cream: #F9F8F5;
+  --color-navy-sweater: #1D2A44;
+  --color-amber-wood: #C27D38;
+  --color-piano-black: #11161B;
+  --color-leaf-green: #4A6149;
+}
+
+/* Base resets & global settings */
+body {
+  font-family: var(--font-sans);
+  background-color: var(--color-soft-cream);
+  color: var(--color-piano-black);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Keyframe Animations for elegant appearance */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+}
+
+/* Interactive focus patterns for form inputs */
+input:focus, select:focus, textarea:focus {
+  outline: none;
+  border-color: var(--color-amber-wood);
+  box-shadow: 0 0 0 1px var(--color-amber-wood);
+}
