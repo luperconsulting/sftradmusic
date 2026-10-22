@@ -2,7 +2,7 @@
 @import "tailwindcss";
 
 @theme {
-  --font-display: "Cinzel", Georgia, serif;
+  --font-serif: "Cinzel", Georgia, serif;
   --font-sans: "Plus Jakarta Sans", ui-sans-serif, system-ui, sans-serif;
 
   --color-soft-cream: #F9F8F5;
@@ -30,9 +30,18 @@ body {
   animation: fadeIn 0.8s cubic-bezier(0.16, 1, 0.3, 1) forwards;
 }
 
-/* Interactive focus patterns for form inputs */
-input:focus, select:focus, textarea:focus {
-  outline: none;
-  border-color: var(--color-amber-wood);
-  box-shadow: 0 0 0 1px var(--color-amber-wood);
+/* Visible keyboard focus ring (Tailwind 4 removes the browser default) */
+:focus-visible {
+  outline: 2px solid var(--color-amber-wood);
+  outline-offset: 3px;
+}
+
+/* Respect the OS "reduce motion" setting */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
