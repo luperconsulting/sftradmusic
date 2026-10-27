@@ -1,20 +1,12 @@
-import React, { useEffect } from "react";
-import { ArrowLeft, Mail, Phone } from "lucide-react";
+import React, { useState } from "react";
+import { ArrowLeft } from "lucide-react";
 
 export default function BookPage() {
-  // GoHighLevel's embed helper: listens for the booking iframe and resizes it to its content
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://link.msgsndr.com/js/form_embed.js";
-    script.async = true;
-    document.body.appendChild(script);
-    return () => {
-      script.remove();
-    };
-  }, []);
+  // Hide the "Loading calendar" placeholder once the GoHighLevel iframe has loaded
+  const [calendarLoaded, setCalendarLoaded] = useState(false);
 
   return (
-    <div className="min-h-screen bg-[#1D2A44] text-white flex flex-col font-sans selection:bg-[#C27D38] selection:text-white">
+    <div className="h-dvh bg-[#1D2A44] text-white flex flex-col font-sans selection:bg-[#C27D38] selection:text-white">
       {/* Skip link: visually hidden until focused with the keyboard */}
       <a
         href="#main-content"
@@ -24,11 +16,11 @@ export default function BookPage() {
       </a>
 
       {/* HEADER */}
-      <header className="sticky top-0 z-50 bg-[#F9F8F5]/95 backdrop-blur-md border-b border-[#11161B]/5">
-        <div className="max-w-7xl mx-auto px-6 h-20 flex items-center justify-between">
+      <header className="shrink-0 bg-[#F9F8F5] border-b border-[#11161B]/5">
+        <div className="max-w-7xl mx-auto px-6 h-16 md:h-20 flex items-center justify-between">
           <a
             href="/"
-            className="font-serif text-2xl tracking-widest text-[#1D2A44] hover:opacity-80 transition-opacity uppercase font-semibold"
+            className="font-serif text-xl md:text-2xl tracking-widest text-[#1D2A44] hover:opacity-80 transition-opacity uppercase font-semibold"
             id="brand-logo"
           >
             ZANE LUPER
@@ -43,63 +35,28 @@ export default function BookPage() {
         </div>
       </header>
 
-      <main id="main-content" className="flex-1 py-16 md:py-24 px-6">
-        <div className="max-w-7xl mx-auto w-full">
-          <div className="text-center mb-12 max-w-2xl mx-auto">
-            <span className="text-xs font-semibold tracking-[0.25em] text-[#E0A363] uppercase block mb-3">Free Intro Call</span>
-            <h1 className="font-serif text-4xl md:text-5xl tracking-wide text-white uppercase font-normal mb-6">BOOK AN INTRO CALL</h1>
-            <p className="text-sm md:text-base text-white/70 font-light leading-relaxed">
-              Pick a time that works for you, and we'll talk about your goals and whether we're a good fit. 15 minutes, no pressure.
-            </p>
-          </div>
+      {/* The calendar card fills whatever height is left below the header, so the page itself never scrolls */}
+      <main id="main-content" className="flex-1 min-h-0 flex flex-col px-4 md:px-6 py-4 md:py-6">
+        <h1 className="shrink-0 font-serif text-xl md:text-2xl tracking-wide text-white uppercase font-normal text-center mb-3 md:mb-4">
+          Book a Free Intro Call
+        </h1>
 
-          {/* Embedded intro-call calendar (GoHighLevel). form_embed.js resizes the iframe to fit. */}
-          <div className="max-w-3xl mx-auto mb-16 bg-white rounded-sm shadow-lg overflow-hidden" id="booking-calendar">
-            <iframe
-              src="https://api.leadconnectorhq.com/widget/booking/vc5JhcEjhKFs3MpJyj9p"
-              title="Book intro call"
-              style={{ width: "100%", minHeight: "700px", border: "none", overflow: "hidden" }}
-              scrolling="no"
-              id="sftradmusic-intro-call"
-            ></iframe>
-          </div>
-
-          <p className="text-center text-xs text-white/60 mb-8 uppercase tracking-widest font-semibold">Or reach out directly</p>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto" id="contact-cards-container">
-            <a href="mailto:zane@sftradmusic.com" className="border border-white/10 hover:border-[#C27D38] bg-[#1d2a44]/70 p-8 rounded-sm text-left flex flex-col justify-between hover:bg-[#182842] hover:-translate-y-1 transition-all duration-300 group cursor-pointer">
-              <div>
-                <div className="w-10 h-10 rounded-sm bg-white/5 text-[#E0A363] flex items-center justify-center mb-6 group-hover:bg-[#9C5F22] group-hover:text-white transition-colors duration-300">
-                  <Mail className="w-5 h-5" />
-                </div>
-                <span className="text-white/70 text-xs tracking-widest font-semibold uppercase block mb-1">EMAIL ADDRESS</span>
-                <p className="font-serif text-lg md:text-xl tracking-wider text-white group-hover:text-[#E0A363] transition-colors font-medium">ZANE@SFTRADMUSIC.COM</p>
-              </div>
-            </a>
-            <a href="tel:+14154390060" className="border border-white/10 hover:border-[#C27D38] bg-[#1d2a44]/70 p-8 rounded-sm text-left flex flex-col justify-between hover:bg-[#1a2842] hover:-translate-y-1 transition-all duration-300 group cursor-pointer">
-              <div>
-                <div className="w-10 h-10 rounded-sm bg-white/5 text-[#E0A363] flex items-center justify-center mb-6 group-hover:bg-[#9C5F22] group-hover:text-white transition-colors duration-300">
-                  <Phone className="w-5 h-5" />
-                </div>
-                <span className="text-white/70 text-xs tracking-widest font-semibold uppercase block mb-1">PHONE OFFICE</span>
-                <p className="font-serif text-lg md:text-xl tracking-wider text-white group-hover:text-[#E0A363] transition-colors font-medium">+1 (415) 439-0060</p>
-              </div>
-            </a>
-          </div>
+        <div className="flex-1 min-h-0 w-full max-w-6xl mx-auto bg-white rounded-sm shadow-lg overflow-hidden relative" id="booking-calendar">
+          {!calendarLoaded && (
+            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[#11161B]/60" aria-live="polite">
+              <span className="w-8 h-8 rounded-full border-2 border-[#C27D38]/30 border-t-[#9C5F22] animate-spin" aria-hidden="true"></span>
+              <span className="text-xs tracking-widest uppercase font-semibold">Loading calendar…</span>
+            </div>
+          )}
+          <iframe
+            src="https://api.leadconnectorhq.com/widget/booking/vc5JhcEjhKFs3MpJyj9p"
+            title="Book intro call"
+            className="w-full h-full border-0 relative"
+            id="sftradmusic-intro-call"
+            onLoad={() => setCalendarLoaded(true)}
+          ></iframe>
         </div>
       </main>
-
-      {/* FOOTER */}
-      <footer className="mt-auto bg-[#11161B] py-12 px-6 border-t border-white/5 text-white/50 text-xs">
-        <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between space-y-6 md:space-y-0 text-center md:text-left">
-          <p className="font-sans text-[11px] tracking-widest font-semibold uppercase">
-            © 2026 ZANE LUPER, HANDCRAFTED IN SAN FRANCISCO.
-          </p>
-          <div className="flex space-x-8 uppercase font-bold tracking-widest text-[11px] text-white/60">
-            <a href="https://www.instagram.com/sf.tradmusic/?hl=en" target="_blank" rel="noopener noreferrer" className="hover:text-[#E0A363] transition-colors">INSTAGRAM</a>
-            <a href="https://www.youtube.com/@sftradmusic" target="_blank" rel="noopener noreferrer" className="hover:text-[#E0A363] transition-colors">YOUTUBE</a>
-          </div>
-        </div>
-      </footer>
     </div>
   );
 }
