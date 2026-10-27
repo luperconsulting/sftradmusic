@@ -456,10 +456,7 @@ export default function App() {
 
           <div className="bg-[#F9F8F5] border border-[#11161B]/15 p-8 md:p-12 max-w-3xl mx-auto text-center rounded-sm shadow-sm my-8">
             <p className="font-serif text-2xl md:text-4xl text-[#1D2A44] font-medium tracking-wide">
-              $100 / hour <span className="text-[#9C5F22]">·</span> $55 / half hour
-            </p>
-            <p className="text-xs md:text-sm font-sans text-[#11161B]/60 mt-3 font-normal italic">
-              (half hour sessions are great for kids and beginners)
+              $100 / hour
             </p>
             <div className="border-t border-[#11161B]/10 mt-6 pt-4 flex flex-col sm:flex-row items-center justify-center gap-4 sm:gap-8 text-xs text-[#11161B]/70 font-semibold uppercase tracking-wider">
               <div className="flex items-center space-x-2">
