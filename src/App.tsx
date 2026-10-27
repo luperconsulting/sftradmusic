@@ -31,17 +31,6 @@ export default function App() {
     };
   }, [isMobileMenuOpen]);
 
-  // GoHighLevel's embed helper: listens for the booking iframe and resizes it to its content
-  useEffect(() => {
-    const script = document.createElement("script");
-    script.src = "https://link.msgsndr.com/js/form_embed.js";
-    script.async = true;
-    document.body.appendChild(script);
-    return () => {
-      script.remove();
-    };
-  }, []);
-
   const scrollToSection = (id: string) => {
     const el = document.getElementById(id);
     if (el) {
@@ -83,15 +72,14 @@ export default function App() {
 
           {/* CTA Header Button */}
           <div className="hidden md:flex items-center">
-            <button
-              type="button"
-              onClick={() => scrollToSection("booking-sec")}
+            <a
+              href="/book"
               className="bg-[#1D2A44] hover:bg-[#9C5F22] text-white px-7 py-3 tracking-widest uppercase font-serif text-xs transition-colors duration-300 font-semibold shadow-sm rounded-sm flex items-center gap-1.5"
               id="cta-head-btn"
             >
               <Calendar size={13} />
               <span>BOOK INTRO CALL</span>
-            </button>
+            </a>
           </div>
 
           {/* Mobile Hamburger Toggle */}
@@ -138,14 +126,13 @@ export default function App() {
             <button onClick={() => scrollToSection("whos-it-for-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">Who It's For</button>
             <button onClick={() => scrollToSection("rates-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">Rates</button>
             <button onClick={() => scrollToSection("studio-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">The Studio</button>
-            <button
-              type="button"
-              onClick={() => scrollToSection("booking-sec")}
+            <a
+              href="/book"
               className="bg-[#1D2A44] text-white text-center py-4 text-xs tracking-widest font-bold inline-block hover:bg-[#9C5F22] transition-colors rounded-sm flex items-center justify-center gap-1.5"
             >
               <Calendar size={14} />
               <span>BOOK FREE INTRO CALL</span>
-            </button>
+            </a>
           </motion.nav>
         )}
       </AnimatePresence>
@@ -168,16 +155,15 @@ export default function App() {
             
             {/* Conversion CTA Card */}
             <div className="w-full max-w-xl bg-white p-6 md:p-8 border border-[#11161B]/10 rounded-sm shadow-sm flex flex-col items-start gap-4 mt-2" id="hero-cta-card">
-              <button
-                type="button"
-                onClick={() => scrollToSection("booking-sec")}
+              <a
+                href="/book"
                 className="w-full md:w-auto bg-[#9C5F22] hover:bg-[#7F4D1B] text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-md flex items-center justify-center gap-2 group"
                 id="hero-booking-btn"
               >
                 <Calendar size={14} />
                 <span>Book a Free Intro Call</span>
                 <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
-              </button>
+              </a>
               <p className="text-xs text-[#11161B]/60 leading-relaxed mt-1">
                 Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
               </p>
@@ -404,16 +390,15 @@ export default function App() {
 
           {/* Mid-page Calendly button */}
           <div className="mt-12 flex flex-col items-center justify-center gap-4">
-            <button
-              type="button"
-              onClick={() => scrollToSection("booking-sec")}
+            <a
+              href="/book"
               className="bg-[#9C5F22] hover:bg-[#7F4D1B] text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-sm flex items-center justify-center gap-2 group"
               id="mid-booking-btn"
             >
               <Calendar size={14} />
               <span>Book a Free Intro Call</span>
               <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-            </button>
+            </a>
             <p className="text-xs text-[#11161B]/60 max-w-md">
               Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
             </p>
@@ -478,16 +463,15 @@ export default function App() {
 
           {/* Calendly Button in rates */}
           <div className="mt-8 flex flex-col items-center justify-center gap-4">
-            <button
-              type="button"
-              onClick={() => scrollToSection("booking-sec")}
+            <a
+              href="/book"
               className="bg-[#9C5F22] hover:bg-[#7F4D1B] text-white font-medium text-xs tracking-widest uppercase px-8 py-4 duration-300 transition-colors cursor-pointer rounded-sm shadow-sm flex items-center justify-center gap-2 group"
               id="rates-booking-btn"
             >
               <Calendar size={14} />
               <span>Book a Free Intro Call</span>
               <ArrowRight size={12} className="group-hover:translate-x-1 transition-transform" />
-            </button>
+            </a>
             <p className="text-xs text-[#11161B]/60 max-w-md">
               Pick a time that works for you, and I'll call you then. 15 minutes, no pressure.
             </p>
@@ -553,17 +537,17 @@ export default function App() {
               Pick a time that works for you, and we'll talk about your goals and whether we're a good fit. 15 minutes, no pressure. You can also reach out directly via email or phone.
             </p>
 
-          </div>
-
-          {/* Embedded intro-call calendar (GoHighLevel). form_embed.js resizes the iframe to fit. */}
-          <div className="max-w-3xl mx-auto mb-16 bg-white rounded-sm shadow-lg overflow-hidden" id="booking-calendar">
-            <iframe
-              src="https://api.leadconnectorhq.com/widget/booking/vc5JhcEjhKFs3MpJyj9p"
-              title="Book intro call"
-              style={{ width: "100%", minHeight: "700px", border: "none", overflow: "hidden" }}
-              scrolling="no"
-              id="sftradmusic-intro-call"
-            ></iframe>
+            <div className="flex flex-col items-center justify-center gap-4 mb-16">
+              <a
+                href="/book"
+                className="bg-[#9C5F22] hover:bg-[#7F4D1B] text-white font-medium text-xs tracking-widest uppercase px-10 py-5 duration-300 transition-colors cursor-pointer rounded-sm shadow-lg flex items-center justify-center gap-2 group"
+                id="footer-booking-btn"
+              >
+                <Calendar size={16} />
+                <span>Book a Free Intro Call</span>
+                <ArrowRight size={14} className="group-hover:translate-x-1 transition-transform" />
+              </a>
+            </div>
           </div>
 
           <div className="grid grid-cols-1 md:grid-cols-2 gap-8 max-w-4xl mx-auto" id="contact-cards-container">
