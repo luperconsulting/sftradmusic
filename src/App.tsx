@@ -465,7 +465,7 @@ export default function App() {
               </div>
               <div className="flex items-center space-x-2">
                 <span className="w-2 h-2 rounded-full bg-[#C27D38]"></span>
-                <span>$10 discount if paid in cash</span>
+                <span>Discount for cash</span>
               </div>
             </div>
           </div>
