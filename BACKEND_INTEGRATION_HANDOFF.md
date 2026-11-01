@@ -145,7 +145,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 ## 5. Teacher permissions and 2FA
 
 - Teacher routes need `role = 'teacher'` and a session at `aal2`. A family account with a verified factor also needs `aal2`.
-- **Open decision for the owner:** 2FA is optional for families who haven't enrolled, matching the approved design's "Set this up later" and "Turn on 2FA" banner. Making it mandatory is a small change in `assertSessionAllowed`, plus a required enrollment step for families. It hasn't been made because it changes the approved flow.
+- **Owner decision:** 2FA stays optional for family accounts, matching the approved design's "Set this up later" and "Turn on 2FA" banner. It is required for the teacher, and for any family account once enrolled. Do not make it mandatory for families without asking the owner.
 - Roles come only from the `accounts` table. No route accepts a role from the browser except the teacher's invitation form, which allows only `guardian` or `student`.
 - Enrollment and verification use Supabase's `mfa.enroll` and `mfa.challengeAndVerify`. No code is checked in the browser.
 - **Recovery codes:** Supabase TOTP has no recovery codes. The screens stay, but say they aren't available. Enroll a second authenticator device for the teacher account now, because a lost phone otherwise means a manual reset by a Supabase administrator.
@@ -159,7 +159,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 | Invitation-only enrollment on the server | Met, tested | Hashed, expiring, single-use, rate limited |
 | Roles can't be escalated | Met, tested | Stored server-side; request fields ignored |
 | Supabase validates passwords and TOTP | Met in code | The browser only calls Supabase. Not yet run live. |
-| Protected APIs require verified MFA | Teacher always; family once enrolled | See the open decision above |
+| Protected APIs require verified MFA | Teacher always; family once enrolled | Owner decision: optional for families |
 | Family boundaries | Met, tested | Every student, invoice, appointment and video is checked |
 | Verified, expiring recovery link | Met in code, **test live** | Page requires Supabase's `PASSWORD_RECOVERY` event. Expiry is the OTP setting. |
 | Backend validates tokens | Met, tested | `auth.getUser` on every request |
@@ -215,7 +215,7 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 2. **Pay Now has no confirmed payment URL** (see Payments).
 3. GHL "Verify first" list is unanswered, including dollars versus cents, which affects the balance rule's displayed amounts.
 4. No student mappings exist, and without them nobody has lessons or invoices.
-5. Owner decisions: mandatory family 2FA, and privacy notice and consent for minors' data.
+5. Owner review of the privacy notice and consent for minors' data.
 6. Families can't yet see or complete practice assignments in the UI. The backend exists, but `/portal/assignments` goes to the videos section.
 7. Rate limits are per instance. Move them to a shared store before launch.
 8. Rich-text notes were requested; notes are plain text.
