@@ -18,8 +18,15 @@ export default function ResetPasswordScreen() {
       setLinkState("invalid");
       return;
     }
-    void supabase.auth.getSession().then(() => {
-      if (live) setLinkState(hasVerifiedRecovery() ? "valid" : "invalid");
+    void supabase.auth.getSession().then(async () => {
+      if (!live) return;
+      const ok = hasVerifiedRecovery();
+      setLinkState(ok ? "valid" : "invalid");
+      // An email link alone must not get past 2FA, so the code is checked before the password changes.
+      if (ok) {
+        const level = await supabase!.auth.mfa.getAuthenticatorAssuranceLevel();
+        if (live) setNeedsCode(level.data?.nextLevel === "aal2" && level.data?.currentLevel !== "aal2");
+      }
     });
     return () => { live = false; };
   }, []);
@@ -28,14 +35,25 @@ export default function ResetPasswordScreen() {
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [needsCode, setNeedsCode] = useState(false);
+  const [code, setCode] = useState("");
   const save = async () => {
     if (pw.length < 12) return setError("Your password needs at least 12 characters.");
     if (pw !== confirm) return setError("Those passwords don't match.");
     if (!supabase) return setError("Password reset isn't connected yet.");
     setBusy(true);
+    if (needsCode) {
+      const factors = await supabase.auth.mfa.listFactors();
+      const factor = factors.data?.totp[0];
+      const check = factor ? await supabase.auth.mfa.challengeAndVerify({ factorId: factor.id, code }) : null;
+      if (!check || check.error) {
+        setBusy(false);
+        return setError("That code isn't valid or has expired. Codes refresh every 30 seconds.");
+      }
+      setNeedsCode(false);
+    }
     const { error: err } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
-    if (err?.code === "insufficient_aal") return setError("This account uses two-factor authentication, so this link can't change its password yet. Ask Zane for help.");
     if (err?.code === "weak_password") return setError(err.message);
     if (err) return setError("This reset link has expired. Ask Zane to send a new one.");
     // Ends every session, including this recovery one, so the new password has to be used.
@@ -53,6 +71,7 @@ export default function ResetPasswordScreen() {
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
         <label style={label}>New password<input style={input} type="password" autoComplete="new-password" placeholder="At least 12 characters" value={pw} onChange={(e) => setPw(e.target.value)} /></label>
         <label style={label}>Confirm password<input style={input} type="password" autoComplete="new-password" value={confirm} onChange={(e) => setConfirm(e.target.value)} /></label>
+        {needsCode && <label style={label}>Six-digit code from your authenticator<input style={input} inputMode="numeric" maxLength={6} autoComplete="one-time-code" placeholder="000000" value={code} onChange={(e) => setCode(e.target.value.replace(/\D/g, ""))} /></label>}
         <button disabled={busy} onClick={save} style={{ background: "#1D2A44", color: "#fff", border: "none", padding: "14px", fontSize: 12, letterSpacing: ".18em", textTransform: "uppercase", fontWeight: 600, cursor: "pointer" }}>{busy ? "Saving…" : "Save password"}</button>
       </div>
       </>}

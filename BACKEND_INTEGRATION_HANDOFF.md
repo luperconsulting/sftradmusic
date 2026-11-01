@@ -144,8 +144,10 @@ Payment status is always read live from GHL, and the portal never writes it. The
 
 ## 5. Teacher permissions and 2FA
 
-- Teacher routes need `role = 'teacher'` and a session at `aal2`. A family account with a verified factor also needs `aal2`.
-- **Owner decision:** 2FA stays optional for family accounts, matching the approved design's "Set this up later" and "Turn on 2FA" banner. It is required for the teacher, and for any family account once enrolled. Do not make it mandatory for families without asking the owner.
+- **Owner decision: 2FA is mandatory on every account** (teacher, family and individual student). Every protected API requires a verified factor and an `aal2` session, enforced in `assertSessionAllowed`. Only `GET /api/me` and invitation routes work without it, so that setup can start.
+- First sign-in sends anyone without a factor to required enrollment at `/verify`. The design's "Set this up later" isn't reachable, and "Turn off" in Security explains that 2FA is required. These controls remain in the views, inactive.
+- Password reset asks for the six-digit code before changing the password, so an email link alone can't get past 2FA.
+- **Lost phone:** there are no recovery codes. To restore access, an administrator verifies the person's identity outside the portal, then removes their factor in the Supabase dashboard (Authentication > Users). They re-enroll at next sign-in. Do this carefully: it's the main way to attack mandatory 2FA. Teacher tooling for it isn't built.
 - Roles come only from the `accounts` table. No route accepts a role from the browser except the teacher's invitation form, which allows only `guardian` or `student`.
 - Enrollment and verification use Supabase's `mfa.enroll` and `mfa.challengeAndVerify`. No code is checked in the browser.
 - **Recovery codes:** Supabase TOTP has no recovery codes. The screens stay, but say they aren't available. Enroll a second authenticator device for the teacher account now, because a lost phone otherwise means a manual reset by a Supabase administrator.
@@ -159,7 +161,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 | Invitation-only enrollment on the server | Met, tested | Hashed, expiring, single-use, rate limited |
 | Roles can't be escalated | Met, tested | Stored server-side; request fields ignored |
 | Supabase validates passwords and TOTP | Met in code | The browser only calls Supabase. Not yet run live. |
-| Protected APIs require verified MFA | Teacher always; family once enrolled | Owner decision: optional for families |
+| Protected APIs require verified MFA | Met, tested | All accounts, by owner decision |
 | Family boundaries | Met, tested | Every student, invoice, appointment and video is checked |
 | Verified, expiring recovery link | Met in code, **test live** | Page requires Supabase's `PASSWORD_RECOVERY` event. Expiry is the OTP setting. |
 | Backend validates tokens | Met, tested | `auth.getUser` on every request |
@@ -168,7 +170,8 @@ Payment status is always read live from GHL, and the portal never writes it. The
 
 **Test these live, because they can't be proven with fakes:**
 - [ ] Open a reset link: the form appears. Open `/reset-password` directly while signed in: it refuses.
-- [ ] Reset the password **on an account with 2FA on.** Supabase may refuse it with `insufficient_aal`. The screen then says so, but that account would have no self-service reset, so tell the repo owner if it happens.
+- [ ] Reset the password on an account with 2FA on. The screen should ask for the code first, then succeed. **This must work, because every account has 2FA.**
+- [ ] Sign in as a new family: required 2FA setup appears, and no data loads until it's verified.
 - [ ] Change a password in Security with the right and wrong current password. This uses `updateUser({ current_password })`, so confirm the project accepts it.
 - [ ] Confirm `sb_publishable_` and `sb_secret_` keys work for sign-in, admin user creation and storage signing.
 
@@ -181,6 +184,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 - **Invitation failure:** if account setup fails after the login is created, the login is deleted and the invitation reopened. A retry would previously have failed forever.
 - **Teacher preview:** can't mark assignments complete.
 - **Keys:** new and legacy formats are recognized. A key in the wrong place is refused rather than used. `SUPABASE_ANON_KEY` is no longer required by the server.
+- **2FA is now mandatory on all accounts**, with a code step in password reset.
 - Added tests for all of the above and for `vercel.json` routing.
 
 ## API contract
@@ -217,8 +221,9 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 4. No student mappings exist, and without them nobody has lessons or invoices.
 5. Owner review of the privacy notice and consent for minors' data.
 6. Families can't yet see or complete practice assignments in the UI. The backend exists, but `/portal/assignments` goes to the videos section.
-7. Rate limits are per instance. Move them to a shared store before launch.
-8. Rich-text notes were requested; notes are plain text.
+7. Lost-phone recovery is a manual Supabase dashboard process, with no recovery codes or teacher tool.
+8. Rate limits are per instance. Move them to a shared store before launch.
+9. Rich-text notes were requested; notes are plain text.
 
 ## Known limitations
 

@@ -86,7 +86,7 @@ function VerifyRoute() {
   const navigate = useNavigate();
   const sec = useSecurity(flash);
   useEffect(() => {
-    // A teacher who hasn't enrolled yet must set up 2FA before anything else loads.
+    // Anyone who hasn't enrolled yet must set up 2FA before anything else loads.
     if (status === "needsMfa" && !me?.user.mfaEnabled) void sec.tfa.open();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status, me?.user.mfaEnabled]);
@@ -102,7 +102,7 @@ function VerifyRoute() {
       stop: (e: any) => e.stopPropagation(),
       hasToast: !!toast,
       toast,
-      authTitle: "Teaching Studio",
+      authTitle: me?.user.role === "teacher" ? "Teaching Studio" : "Student Portal",
       go: { home: () => { window.location.href = "/"; } },
     };
     return (

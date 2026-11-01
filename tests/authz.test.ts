@@ -45,9 +45,22 @@ describe("role and 2FA enforcement", () => {
     expect(res.body.error.code).toBe("mfa_required");
   });
 
-  it("requires the second factor once a family member has enrolled", async () => {
-    const res = await get(createApp(buildDeps({ p: { ...parent, mfa: true, aal: "aal1" } })), "/api/portal/dashboard", "p");
+  it.each(["guardian", "student"] as const)("requires a verified second factor for a %s account", async (role) => {
+    const u = { role, links: parent.links };
+    const passwordOnly = await get(createApp(buildDeps({ p: { ...u, mfa: true, aal: "aal1" } })), "/api/portal/dashboard", "p");
+    expect(passwordOnly.body.error.code).toBe("mfa_required");
+    const notEnrolled = await get(createApp(buildDeps({ p: { ...u, mfa: false, aal: "aal1" } })), "/api/portal/dashboard", "p");
+    expect(notEnrolled.body.error.code).toBe("mfa_required");
+  });
+
+  it("rejects a 2FA-level session whose account no longer has a factor", async () => {
+    const res = await get(createApp(buildDeps({ p: { ...parent, mfa: false, aal: "aal2" } })), "/api/portal/dashboard", "p");
     expect(res.body.error.code).toBe("mfa_required");
+  });
+
+  it("still lets a password-only session read its profile, so setup can start", async () => {
+    const deps = buildDeps({ p: { ...parent, mfa: false, aal: "aal1" } }, null, { getAccount: async () => ({ id: "p", userId: "p", role: "guardian", status: "active", email: "", displayName: "T U", ghlContactId: null }) });
+    expect((await get(createApp(deps), "/api/me", "p")).status).toBe(200);
   });
 
   it("lets a fully verified teacher in", async () => {

@@ -43,7 +43,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       const profile = await api<MeResponse>("/me");
       setMe(profile);
       // The server enforces this on every request. Checking here only decides which screen to show.
-      const needsMfa = profile.user.aal !== "aal2" && (profile.user.role === "teacher" || profile.user.mfaEnabled);
+      const needsMfa = profile.user.aal !== "aal2" || !profile.user.mfaEnabled;
       setStatus(needsMfa ? "needsMfa" : "ready");
     } catch (e) {
       setMe(null);

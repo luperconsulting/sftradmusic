@@ -58,22 +58,8 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
   }, [enroll, input, busy, flash, refresh]);
 
   const disable = useCallback(async () => {
-    if (!supabase) return;
-    if (me?.user.role === "teacher") {
-      flash("Two-factor authentication is required on the teacher account.");
-      return;
-    }
-    const list = await supabase.auth.mfa.listFactors();
-    const factor = list.data?.totp[0];
-    if (!factor) return;
-    const { error: err } = await supabase.auth.mfa.unenroll({ factorId: factor.id });
-    if (err) flash("Couldn't turn off two-factor. Please sign in again and retry.");
-    else {
-      await supabase.auth.refreshSession();
-      await refresh();
-      flash("Two-factor authentication turned off.");
-    }
-  }, [me, flash, refresh]);
+    flash("Two-factor authentication is required on all portal accounts.");
+  }, [flash]);
 
   const score = pwNext.length >= 12 ? (/[0-9]/.test(pwNext) && /[A-Z]/.test(pwNext) ? 4 : 3) : pwNext.length >= 8 ? 2 : pwNext.length ? 1 : 0;
   const cols = ["", "#9C5F22", "#C27D38", "#4A6149", "#4A6149"];

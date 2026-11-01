@@ -40,7 +40,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     [STUDENT_B]: studentRecord(STUDENT_B, "contactB", "payerB"),
   };
   const auth: Partial<AuthAdmin> = {
-    verifyToken: async (token) => (users[token] ? { userId: token, email: `${token}@example.com`, aal: users[token].aal ?? "aal1", mfaEnrolled: !!users[token].mfa } : null),
+    verifyToken: async (token) => (users[token] ? { userId: token, email: `${token}@example.com`, aal: users[token].aal ?? "aal2", mfaEnrolled: users[token].mfa ?? true } : null),
     sendPasswordReset: async () => undefined,
     setBanned: async () => undefined,
   };

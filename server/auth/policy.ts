@@ -21,9 +21,8 @@ export interface Actor {
 
 export function assertSessionAllowed(actor: Actor) {
   if (actor.status !== "active") throw new ApiError(403, "account_suspended", "This account's access has been turned off. Please contact Zane.");
-  if (actor.role === "teacher" && actor.aal !== "aal2") throw new ApiError(403, "mfa_required", "Two-factor verification is required.");
-  // Once someone has turned on 2FA, a password-only session is not enough, whatever the UI does.
-  if (actor.mfaEnrolled && actor.aal !== "aal2") throw new ApiError(403, "mfa_required", "Two-factor verification is required.");
+  // Every account needs a verified factor and a session that passed it, whatever the UI does.
+  if (!actor.mfaEnrolled || actor.aal !== "aal2") throw new ApiError(403, "mfa_required", "Two-factor verification is required.");
 }
 
 export function assertTeacher(actor: Actor) {
