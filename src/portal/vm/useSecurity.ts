@@ -130,10 +130,9 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
         if (pwNext !== pwConfirm) return setPwError("Those passwords don't match.");
         if (!supabase || !me) return setPwError("Password changes aren't available right now.");
         try {
-          const check = await supabase.auth.signInWithPassword({ email: me.user.email, password: pwCur });
-          if (check.error) return setPwError("That current password isn't right.");
-          const { error: err } = await supabase.auth.updateUser({ password: pwNext });
-          if (err) return setPwError(err.message);
+          // Supabase checks the current password itself, and the session keeps its 2FA level.
+          const { error: err } = await supabase.auth.updateUser({ password: pwNext, current_password: pwCur });
+          if (err) return setPwError(err.code === "weak_password" ? err.message : "That password couldn't be changed. Check your current password and try again.");
           resetPw();
           setPwLast("just now");
           await refresh();

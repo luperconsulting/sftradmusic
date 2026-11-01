@@ -1,3 +1,6 @@
+-- ALREADY APPLIED to the live Supabase project, including the grants below. Do not run this file against that
+-- project again. Later schema changes belong in a new migration file.
+--
 -- SF Trad Music portal schema. Holds what GoHighLevel can't hold privately: portal accounts, account-to-contact
 -- mappings, notes, video metadata and assignments. Appointments and invoices stay in GoHighLevel.
 -- The API uses the service role. RLS below is a second line of defense in case the anon key is ever used directly.
@@ -128,6 +131,16 @@ create function public.can_view_student(sid uuid) returns boolean
   language sql stable security definer set search_path = public as
   $$ select public.is_teacher() or exists (
        select 1 from account_students where account_id = public.current_account_id() and student_id = sid) $$;
+
+-- Postgres lets everyone execute new functions by default. Policies run as the signed-in user, so only
+-- authenticated keeps execute. An anon query against a table using these policies is refused.
+revoke all on function public.current_account_id() from public, anon;
+revoke all on function public.is_teacher() from public, anon;
+revoke all on function public.can_view_student(uuid) from public, anon;
+
+grant execute on function public.current_account_id() to authenticated;
+grant execute on function public.is_teacher() to authenticated;
+grant execute on function public.can_view_student(uuid) to authenticated;
 
 alter table public.accounts enable row level security;
 alter table public.students enable row level security;

@@ -1,7 +1,10 @@
 import { generateKeyPairSync, createSign } from "node:crypto";
+import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
+import { loadConfig } from "../server/config";
+import { supabaseKeyKind } from "../shared/supabase-keys";
 import { hashCredential, newEnrollmentCode } from "../server/services/invitations";
 import { verifyWebhookSignature } from "../server/webhooks";
 import { memoryRateLimiter } from "../server/rateLimit";
@@ -179,5 +182,104 @@ describe("webhook signatures", () => {
   it("the route refuses unsigned events", async () => {
     const res = await request(createApp(buildDeps({}))).post("/api/webhooks/ghl").send({ type: "InvoicePaid" });
     expect(res.status).toBe(401);
+  });
+});
+
+describe("account creation and roles", () => {
+  const invite = { id: "i", tokenHash: "h", method: "code", email: "n@example.com", name: "N", role: "guardian", studentIds: [STUDENT_A], status: "pending", expiresAt: new Date(Date.now() + 864e5).toISOString(), preview: {} };
+  const body = { credential: "SFTM-AAAA-BBBB", password: "a-long-enough-password" };
+
+  it("gives a Supabase login with no portal account no access, so a public sign-up gets nothing", async () => {
+    const deps = buildDeps({});
+    (deps.auth as any).verifyToken = async () => ({ userId: "stranger", email: "x@example.com", aal: "aal2", mfaEnrolled: false });
+    const res = await get(createApp(deps), "/api/me", "any");
+    expect(res.status).toBe(403);
+  });
+
+  it("can't invite a teacher, even as the teacher", async () => {
+    const res = await request(createApp(buildDeps({ t: { role: "teacher", aal: "aal2" } })))
+      .post("/api/teacher/invitations").set("Authorization", "Bearer t")
+      .send({ method: "code", role: "teacher", email: "a@example.com", name: "A", studentIds: [STUDENT_A] });
+    expect(res.status).toBe(400);
+  });
+
+  it("takes the role from the invitation, ignoring anything in the request", async () => {
+    const createAccountForInvitation = vi.fn(async () => undefined);
+    const deps = buildDeps({}, null, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, createAccountForInvitation });
+    (deps.auth as any).createUser = async () => "new-user";
+    const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ ...body, role: "teacher", studentIds: [STUDENT_B] });
+    expect(res.status).toBe(200);
+    expect((createAccountForInvitation.mock.calls as any)[0][0]).toMatchObject({ role: "guardian", studentIds: [STUDENT_A] });
+  });
+
+  it("removes the login and reopens the invitation if account setup fails", async () => {
+    const releaseInvitation = vi.fn(async () => undefined);
+    const deleteUser = vi.fn(async () => undefined);
+    const deps = buildDeps({}, null, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, releaseInvitation, createAccountForInvitation: async () => { throw new Error("db"); } });
+    Object.assign(deps.auth as any, { createUser: async () => "new-user", deleteUser });
+    expect((await request(createApp(deps)).post("/api/invitations/redeem").send(body)).status).toBe(500);
+    expect(deleteUser).toHaveBeenCalledWith("new-user");
+    expect(releaseInvitation).toHaveBeenCalledWith("i");
+  });
+});
+
+describe("billing visibility", () => {
+  it("hides invoices from a linked account that can't pay", async () => {
+    const viewer = { role: "student" as const, links: [{ studentId: STUDENT_A, canBook: false, canPay: false }] };
+    const res = await get(createApp(buildDeps({ viewer })), "/api/portal/dashboard", "viewer");
+    expect(res.status).toBe(200);
+    expect(res.body.billing).toBeNull();
+  });
+
+  it("shows invoices to the payer", async () => {
+    const res = await get(createApp(buildDeps({ parent })), "/api/portal/dashboard", "parent");
+    expect(res.body.billing).not.toBeNull();
+  });
+});
+
+describe("Supabase configuration", () => {
+  const jwt = (role: string) => `h.${Buffer.from(JSON.stringify({ role })).toString("base64url")}.s`;
+  const base = { SUPABASE_URL: "https://x.supabase.co" };
+
+  it("recognizes new and legacy key formats", () => {
+    expect(supabaseKeyKind("sb_publishable_abc")).toBe("public");
+    expect(supabaseKeyKind("sb_secret_abc")).toBe("secret");
+    expect(supabaseKeyKind(jwt("anon"))).toBe("public");
+    expect(supabaseKeyKind(jwt("service_role"))).toBe("secret");
+    expect(supabaseKeyKind("nonsense")).toBe("unknown");
+  });
+
+  it("accepts either secret format on the server", () => {
+    expect(loadConfig({ ...base, SUPABASE_SERVICE_ROLE_KEY: "sb_secret_abc" }).supabase).not.toBeNull();
+    expect(loadConfig({ ...base, SUPABASE_SERVICE_ROLE_KEY: jwt("service_role") }).supabase).not.toBeNull();
+  });
+
+  it("stays not configured when given a public key or nothing", () => {
+    expect(loadConfig({ ...base, SUPABASE_SERVICE_ROLE_KEY: "sb_publishable_abc" }).supabase).toBeNull();
+    expect(loadConfig({ ...base, SUPABASE_SERVICE_ROLE_KEY: jwt("anon") }).supabase).toBeNull();
+    expect(loadConfig(base).supabase).toBeNull();
+  });
+});
+
+describe("Vercel routing", () => {
+  const vercel = JSON.parse(readFileSync("vercel.json", "utf8"));
+  const sources: string[] = vercel.rewrites.map((r: any) => r.source);
+
+  it("sends every portal route to the portal page and the API to the function", () => {
+    for (const s of ["/signin", "/signup", "/invite", "/verify", "/denied", "/reset-password", "/portal/(.*)", "/teacher", "/teacher/(.*)"]) {
+      expect(vercel.rewrites.find((r: any) => r.source === s)?.destination).toBe("/portal");
+    }
+    expect(vercel.rewrites.find((r: any) => r.source === "/api/(.*)")?.destination).toBe("/api");
+    expect(existsSync("portal.html")).toBe(true);
+    expect(vercel.cleanUrls).toBe(true); // this is what serves /portal itself from portal.html
+    expect(sources).not.toContain("/");
+    expect(sources).not.toContain("/book");
+  });
+
+  it("keeps portal pages out of search engines and API responses out of caches", () => {
+    for (const s of ["/signin", "/reset-password", "/portal", "/teacher", "/api/(.*)"]) {
+      const headers = vercel.headers.find((h: any) => h.source === s)?.headers.map((x: any) => x.key);
+      expect(headers).toEqual(expect.arrayContaining(["X-Robots-Tag", "Cache-Control"]));
+    }
   });
 });

@@ -193,15 +193,18 @@ export function createApp(deps: Deps) {
     const { store, auth } = needStore();
     const invite = await findLiveInvite(credential);
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
+    let userId: string | null = null;
     try {
-      const userId = await auth.createUser(invite.email, pw);
+      userId = await auth.createUser(invite.email, pw);
       await store.createAccountForInvitation(invite, userId);
-      await store.audit(null, "invitation.redeemed", invite.id);
-      return { email: invite.email };
     } catch (e) {
+      // Undo the half-made login too. Otherwise a retry fails forever because the email is already taken.
+      if (userId) await auth.deleteUser(userId).catch(() => console.error("[api] could not remove partial user"));
       await store.releaseInvitation(invite.id);
       throw e;
     }
+    await store.audit(null, "invitation.redeemed", invite.id);
+    return { email: invite.email };
   }));
 
   // ---- signed-in, any role ---------------------------------------------------------------------------------
@@ -287,7 +290,8 @@ export function createApp(deps: Deps) {
       notes,
       videos,
       assignments,
-      billing,
+      // Invoices can include siblings and the payer's details, so only payers and the teacher receive them.
+      billing: isTeacher || canPayFor(actor, student.id) ? billing : null,
       lessonsAvailable,
       canBook: canBookFor(actor, student.id),
       canPay: canPayFor(actor, student.id),
@@ -357,6 +361,7 @@ export function createApp(deps: Deps) {
   app.post("/api/assignments/:id/complete", authenticate(), wrap(async (req) => {
     const id = parse(uuid, req.params.id);
     const { studentId, done } = parse(z.object({ studentId: uuid, done: z.boolean() }), req.body);
+    if (actorOf(req).role === "teacher") return { ok: true }; // a teacher preview must not change a student's record
     await loadStudent(req, studentId);
     await needStore().store.setAssignmentComplete(id, studentId, done);
     return { ok: true };

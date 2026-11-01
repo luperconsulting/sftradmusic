@@ -115,6 +115,7 @@ export interface AuthAdmin {
   /** Validates a Supabase access token with Supabase. Returns null for anything invalid or expired. */
   verifyToken(token: string): Promise<{ userId: string; email: string; aal: string; mfaEnrolled: boolean } | null>;
   createUser(email: string, password: string): Promise<string>;
+  deleteUser(userId: string): Promise<void>;
   sendPasswordReset(email: string): Promise<void>;
   setBanned(userId: string, banned: boolean): Promise<void>;
 }

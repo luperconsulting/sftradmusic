@@ -317,6 +317,10 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
       if (error || !data.user) throw new Error("auth: could not create user");
       return data.user.id;
     },
+    async deleteUser(userId) {
+      const { error } = await admin.auth.admin.deleteUser(userId);
+      if (error) throw new Error("auth: could not remove user");
+    },
     async sendPasswordReset(email) {
       const { error } = await admin.auth.resetPasswordForEmail(email, { redirectTo: `${appUrl}/reset-password` });
       if (error) throw new Error("auth: could not send reset");

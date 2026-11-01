@@ -1,8 +1,10 @@
 // Reads server configuration. Anything missing leaves that integration "not configured", and the routes
 // depending on it fail with 503. Nothing falls back to simulated data.
+import { supabaseKeyKind } from "../shared/supabase-keys.js";
+
 export interface ServerConfig {
   appUrl: string;
-  supabase: { url: string; anonKey: string; serviceRoleKey: string } | null;
+  supabase: { url: string; serviceRoleKey: string } | null;
   ghl: {
     token: string;
     locationId: string;
@@ -24,15 +26,16 @@ export interface ServerConfig {
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
   const supabaseUrl = env.SUPABASE_URL;
-  const anonKey = env.SUPABASE_ANON_KEY;
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
   const ghlToken = env.GHL_PRIVATE_INTEGRATION_TOKEN;
   const locationId = env.GHL_LOCATION_ID;
   const calendarId = env.GHL_LESSON_CALENDAR_ID;
+  // A public key here would make every store call fail on RLS, so treat it as not configured.
+  const usableServerKey = !!serviceRoleKey && supabaseKeyKind(serviceRoleKey) !== "public";
   const paymentUrlTemplate = env.GHL_INVOICE_PAYMENT_URL_TEMPLATE || null;
   return {
     appUrl: env.APP_URL || "http://localhost:3000",
-    supabase: supabaseUrl && anonKey && serviceRoleKey ? { url: supabaseUrl, anonKey, serviceRoleKey } : null,
+    supabase: supabaseUrl && usableServerKey ? { url: supabaseUrl, serviceRoleKey: serviceRoleKey! } : null,
     ghl:
       ghlToken && locationId && calendarId
         ? {
