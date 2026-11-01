@@ -1,0 +1,404 @@
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type SlotsResponse } from "../../../shared/portal-types";
+import { api, ApiRequestError, errorText } from "../api/client";
+import { useAuth } from "../auth/AuthContext";
+import { clock, copy, fmt, fmtDay, fullDate, greeting, money, TZ, todayLabel, useToast, useViewport } from "./common";
+import { useSecurity } from "./useSecurity";
+import type { VM } from "./types";
+
+const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
+const PACKAGES = [
+  { id: 0, name: "4 lessons", lessons: 4, price: "$380", list: "$400", save: "$20", per: "$95 / lesson", popular: false },
+  { id: 1, name: "8 lessons", lessons: 8, price: "$720", list: "$800", save: "$80", per: "$90 / lesson", popular: true },
+  { id: 2, name: "12 lessons", lessons: 12, price: "$1,020", list: "$1,200", save: "$180", per: "$85 / lesson", popular: false },
+];
+const NOT_ACTIVE = "This option isn't switched on yet. Ask Zane if you'd like it.";
+const pad = (n: number) => String(n).padStart(2, "0");
+const statusWord: Record<string, string> = { sent: "Unpaid", overdue: "Overdue", partially_paid: "Partially paid", payment_processing: "Processing", paid: "Paid", void: "Void" };
+
+function nextView(lesson: LessonDTO | undefined) {
+  if (!lesson) return { date: "No lesson booked", time: "—", loc: "—", locSub: "", status: "Not booked", icon: "ph ph-calendar-blank" };
+  return {
+    date: fullDate(lesson.startTime),
+    time: `${clock(lesson.startTime)} – ${clock(lesson.endTime)}`,
+    loc: lesson.locationLabel,
+    locSub: lesson.locationSub,
+    status: lesson.status === "confirmed" ? "Confirmed" : lesson.status.charAt(0).toUpperCase() + lesson.status.slice(1),
+    icon: lesson.isZoom ? "ph ph-video-camera" : "ph ph-map-pin",
+  };
+}
+
+export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {}): VM {
+  const { me, signOut, refresh: refreshMe } = useAuth();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const vp = useViewport();
+  const { toast, flash } = useToast();
+  const previewId = screen.readOnlyStudentId ?? null;
+
+  const [childId, setChildId] = useState<string | null>(previewId);
+  const [data, setData] = useState<DashboardResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [dialog, setDialog] = useState<{ kind: string; data: any } | null>(null);
+  const [form, setForm] = useState<any>({});
+  const [openNote, setOpenNote] = useState(0);
+  const [cat, setCat] = useState("All");
+  const [invoiceId, setInvoiceId] = useState<string | null>(null);
+  const [paying, setPaying] = useState(false);
+  const [booking, setBooking] = useState(false);
+  const [rsLesson, setRsLesson] = useState<LessonDTO | null>(null);
+  const [bkLoc, setBkLoc] = useState("Music City SF");
+  const [bkMonth, setBkMonth] = useState(0);
+  const [bkDay, setBkDay] = useState<string | null>(null);
+  const [bkSlot, setBkSlot] = useState<string | null>(null);
+  const [slots, setSlots] = useState<SlotsResponse | null>(null);
+  const [slotError, setSlotError] = useState("");
+  const [refEmail, setRefEmail] = useState("");
+  const [pkgStep, setPkgStep] = useState(1);
+  const [pkgChoice, setPkgChoice] = useState(1);
+
+  const close = useCallback(() => setDialog(null), []);
+  const open = useCallback((kind: string, d: any = {}) => {
+    setDialog({ kind, data: d });
+    setForm(d.form ?? {});
+    setMenuOpen(false);
+  }, []);
+  const sec = useSecurity(flash, useCallback(() => open("enroll2fa"), [open]));
+
+  const load = useCallback(async () => {
+    try {
+      const q = childId ? `?studentId=${childId}` : "";
+      setData(await api<DashboardResponse>(`/portal/dashboard${q}`));
+      setLoadError("");
+    } catch (e) {
+      setLoadError(errorText(e));
+    } finally {
+      setLoading(false);
+    }
+  }, [childId]);
+  useEffect(() => { void load(); }, [load]);
+  // Back from the Stripe tab: re-read status from the server. Only the server can report a payment.
+  useEffect(() => {
+    const onFocus = () => { if (document.visibilityState === "visible") void load(); };
+    document.addEventListener("visibilitychange", onFocus);
+    return () => document.removeEventListener("visibilitychange", onFocus);
+  }, [load]);
+
+  const student = data?.student ?? null;
+  const readOnly = !!data?.readOnly;
+
+  // Available lesson times for the month in view
+  const monthBase = useMemo(() => {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + bkMonth, 1));
+  }, [bkMonth]);
+  const dialogKind = dialog?.kind;
+  useEffect(() => {
+    if (dialogKind !== "book" || !student) return;
+    let live = true;
+    const y = monthBase.getUTCFullYear(), m = monthBase.getUTCMonth();
+    const today = new Date().toISOString().slice(0, 10);
+    const first = `${y}-${pad(m + 1)}-01`;
+    const from = first < today ? today : first;
+    const to = `${y}-${pad(m + 1)}-${pad(new Date(Date.UTC(y, m + 1, 0)).getUTCDate())}`;
+    setSlots(null);
+    setSlotError("");
+    api<SlotsResponse>(`/lessons/slots?studentId=${student.id}&from=${from}&to=${to}`)
+      .then((s) => {
+        if (!live) return;
+        setSlots(s);
+        setBkDay(Object.keys(s.days).filter((d) => s.days[d].length).sort()[0] ?? null);
+        setBkSlot(null);
+      })
+      .catch((e) => live && setSlotError(errorText(e)));
+    return () => { live = false; };
+  }, [dialogKind, student?.id, monthBase]);
+
+  const billing = data?.billing ?? null;
+  const unpaid = !!billing?.bookingBlocked;
+  const paid = !!billing && !billing.bookingBlocked;
+  const kidNextLesson = data?.upcoming[0];
+
+  const openBook = () => {
+    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    setRsLesson(null);
+    setBkMonth(0);
+    setDialog({ kind: "book", data: {} });
+    setMenuOpen(false);
+  };
+  const openReschedule = (lesson?: LessonDTO) => {
+    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    if (!lesson) return;
+    setRsLesson(lesson);
+    setBkMonth(0);
+    setDialog({ kind: "book", data: {} });
+  };
+  const confirmBooking = async () => {
+    if (!bkSlot || !student) return flash("Choose a time first.");
+    if (booking) return;
+    setBooking(true);
+    try {
+      const body = { studentId: student.id, startTime: bkSlot, location: bkLoc };
+      if (rsLesson) await api(`/lessons/${rsLesson.id}/reschedule`, { method: "POST", body });
+      else await api("/lessons", { method: "POST", body });
+      flash(rsLesson ? `Lesson moved to ${fullDate(bkSlot)} at ${clock(bkSlot)}.` : `Lesson booked: ${fullDate(bkSlot)} at ${clock(bkSlot)}.`);
+      close();
+      setRsLesson(null);
+      await load();
+    } catch (e) {
+      flash(errorText(e));
+      if (e instanceof ApiRequestError && e.code === "outstanding_balance") {
+        close();
+        await load();
+      }
+    } finally {
+      setBooking(false);
+    }
+  };
+
+  // Invoice shown in the pay and invoice dialogs
+  const allInvoices: InvoiceDTO[] = billing?.history ?? [];
+  const firstOpen = billing?.openInvoices[0];
+  const lastPaid = allInvoices.find((i) => i.status === "paid");
+  const selected = allInvoices.find((i) => i.id === invoiceId) ?? firstOpen ?? allInvoices[0];
+  const selectedOpen = !!selected && billing?.openInvoices.some((i) => i.id === selected.id);
+
+  const payNow = async (e?: any) => {
+    e?.preventDefault?.();
+    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    const target = selectedOpen ? selected : firstOpen;
+    if (!target || paying) return;
+    setPaying(true); // blocks a second request while the first is in flight
+    const tab = window.open("", "_blank"); // opened during the click so popup blockers allow it
+    try {
+      const { url } = await api<{ url: string }>(`/invoices/${target.id}/payment-link`, { method: "POST" });
+      if (tab) {
+        tab.opener = null;
+        tab.location.href = url;
+      } else window.location.href = url;
+      close();
+      flash("Opening secure checkout. Your balance updates here once the payment clears.");
+    } catch (err) {
+      tab?.close();
+      flash(errorText(err));
+    } finally {
+      setPaying(false);
+    }
+  };
+
+  const hoursUntilNext = kidNextLesson ? (new Date(kidNextLesson.startTime).getTime() - Date.now()) / 36e5 : 0;
+  const rsAllowed = !!kidNextLesson && hoursUntilNext > 24 && !readOnly && !!data?.canBook;
+  const next = nextView(kidNextLesson);
+  const rs = {
+    mode: !!rsLesson,
+    notMode: !rsLesson,
+    allowed: rsAllowed,
+    locked: !!kidNextLesson && hoursUntilNext <= 24,
+    allowedNote: rsAllowed,
+    note: "Free to reschedule until 24 hours before the lesson.",
+    current: rsLesson ? `${fullDate(rsLesson.startTime)} at ${clock(rsLesson.startTime)}` : "",
+    open: () => openReschedule(kidNextLesson),
+  };
+
+  const notes = (data?.notes ?? []).map((n, i) => ({
+    ...n,
+    date: fmtDay(n.lessonDate),
+    open: openNote === i,
+    caret: openNote === i ? "ph ph-caret-up" : "ph ph-caret-down",
+    toggle: () => setOpenNote(openNote === i ? -1 : i),
+  }));
+  const invoiceLookup = (lesson: LessonDTO) => {
+    const day = fmt(lesson.startTime, { year: "numeric", month: "2-digit", day: "2-digit" });
+    const note = data?.notes.find((n) => fmtDay(n.lessonDate, { year: "numeric", month: "2-digit", day: "2-digit" }) === day);
+    return note;
+  };
+  const history = (data?.history ?? []).map((l) => {
+    const note = invoiceLookup(l);
+    const cancelled = /cancel|noshow/i.test(l.status);
+    const st = cancelled ? "Cancelled" : "Attended";
+    return {
+      date: fmt(l.startTime, { month: "short", day: "numeric", year: "numeric" }),
+      dur: cancelled ? "—" : `${Math.round((new Date(l.endTime).getTime() - new Date(l.startTime).getTime()) / 60000)} min`,
+      status: st,
+      sColor: st === "Attended" ? "#4A6149" : "rgba(17,22,27,.5)",
+      note: note ? "View note" : "—",
+      invoice: "—",
+      open: () => (note ? open("note", { note: { ...note, date: fmtDay(note.lessonDate) } }) : flash("No note was published for this lesson.")),
+    };
+  });
+  const videos = (data?.videos ?? []).filter((x) => cat === "All" || x.category === cat).map((x) => {
+    const watched = !!x.watchedAt;
+    return {
+      title: x.title,
+      cat: x.category,
+      desc: x.description,
+      dur: x.durationLabel,
+      assigned: fmt(x.assignedAt, { month: "short", day: "numeric" }),
+      wLabel: watched ? "Watched" : "Not watched",
+      wColor: watched ? "#4A6149" : "#9C5F22",
+      wIcon: watched ? "ph-fill ph-check-circle" : "ph ph-circle",
+      watch: () => {
+        open("video", { video: x });
+        if (student && !readOnly) void api(`/videos/${x.id}/watched`, { method: "POST", body: { studentId: student.id } }).then(load).catch(() => undefined);
+      },
+    };
+  });
+
+  const days = Object.keys(slots?.days ?? {}).filter((d) => slots!.days[d].length).sort();
+  const dayLabel = bkDay ? fmtDay(bkDay, { weekday: "short", month: "short", day: "numeric" }) : "No open dates";
+  const bk = {
+    locOpts: [["Music City SF", "ph ph-map-pin"], ["Zoom", "ph ph-video-camera"]].map(([l, icon]) => ({
+      label: l, icon, on: bkLoc === l, pick: () => setBkLoc(l), bg: bkLoc === l ? "#1D2A44" : "transparent", color: bkLoc === l ? "#fff" : "rgba(17,22,27,.7)",
+    })),
+    dates: Array.from({ length: 16 }, (_, i) => {
+      const d = days[i];
+      if (!d) return { dow: "", day: "", blank: true, vis: "hidden", cursor: "default", border: "transparent", bg: "transparent", color: "transparent", pick: () => {} };
+      const on = d === bkDay;
+      return {
+        dow: fmtDay(d, { weekday: "short" }), day: Number(d.slice(8)), blank: false, vis: "visible", cursor: "pointer", on,
+        pick: () => { setBkDay(d); setBkSlot(null); },
+        border: on ? "#1D2A44" : "rgba(17,22,27,.12)", bg: on ? "#1D2A44" : "#fff", color: on ? "#fff" : "#1D2A44",
+      };
+    }),
+    times: (bkDay ? slots?.days[bkDay] ?? [] : []).map((iso) => {
+      const on = bkSlot === iso;
+      return { label: clock(iso), taken: false, on, pick: () => setBkSlot(iso), border: on ? "#1D2A44" : "rgba(17,22,27,.12)", bg: on ? "#1D2A44" : "#fff", color: on ? "#fff" : "#1D2A44", cursor: "pointer", deco: "none" };
+    }),
+    dateLabel: slotError ? "unavailable" : !slots ? "Loading…" : dayLabel,
+    monthLabel: "Date · " + new Intl.DateTimeFormat("en-US", { timeZone: "UTC", month: "long", year: "numeric" }).format(monthBase),
+    noPrev: bkMonth === 0,
+    prevOpacity: bkMonth === 0 ? 0.4 : 1,
+    prevMonth: () => setBkMonth((m) => Math.max(0, m - 1)),
+    nextMonth: () => setBkMonth((m) => Math.min(6, m + 1)),
+    recurring: false,
+    toggleRecurring: () => flash("Weekly repeats aren't switched on yet. Ask Zane to hold a regular time."),
+    confirmLabel: booking ? "Saving…" : rsLesson ? "Confirm new time" : "Confirm lesson",
+    summary: slotError || (bkSlot && student ? `${student.firstName} · ${dayLabel} · ${clock(bkSlot)} · ${bkLoc}` : "Choose a date and time"),
+    confirm: confirmBooking,
+  };
+
+  const invView = selected
+    ? {
+        issued: fmtDay(selected.issueDate, { month: "short", day: "numeric", year: "numeric" }),
+        due: fmtDay(selected.dueDate, { month: "short", day: "numeric", year: "numeric" }),
+        status: statusWord[selected.status] ?? selected.status,
+        color: selected.status === "paid" ? "#4A6149" : "#9C5F22",
+        total: money(selected.total),
+        lines: selected.lines.map((l) => ({ label: l.label, amount: money(l.amount) })),
+      }
+    : { issued: "—", due: "—", status: "No invoices yet", color: "rgba(17,22,27,.5)", total: "$0.00", lines: [] };
+
+  const overdueDays = firstOpen?.dueDate ? Math.floor((Date.now() - new Date(firstOpen.dueDate).getTime()) / 864e5) : 0;
+  const bal = {
+    unavailable: !billing && !loading,
+    amount: money(billing?.outstanding ?? 0),
+    number: firstOpen?.number ?? "",
+    items: firstOpen?.lines.map((l) => l.label).join(", ") || firstOpen?.title || "",
+    due: fmtDay(firstOpen?.dueDate, { month: "long", day: "numeric", year: "numeric" }),
+    statusLabel: firstOpen ? statusWord[firstOpen.status] ?? firstOpen.status : "",
+    statusLine: overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Due now",
+    hasLast: !!lastPaid,
+    lastAmount: lastPaid ? money(lastPaid.amountPaid || lastPaid.total) : "",
+    lastDate: fmtDay(lastPaid?.issueDate),
+    lastNumber: lastPaid?.number ?? "",
+  };
+
+  const acctMe = me?.account;
+  const familyRows = [
+    { initials: acctMe?.initials ?? "", name: acctMe?.ownerFull ?? "", meta: `${acctMe?.email ?? ""} · account owner`, role: me?.user.role === "guardian" ? "Parent" : "Student" },
+    ...(data?.students ?? []).filter((s) => s.fullName !== acctMe?.ownerFull).map((s) => ({ initials: s.firstName[0] ?? "", name: s.fullName, meta: s.styleLine, role: "Student" })),
+  ];
+  const acct = {
+    label: acctMe?.label ?? "",
+    owner: acctMe?.ownerFirst ?? "",
+    ownerFull: acctMe?.ownerFull ?? "",
+    email: acctMe?.email ?? "",
+    initials: acctMe?.initials ?? "",
+    menuLabel: acctMe?.isFamily ? "Profile & family" : "Profile",
+    familyNote: acctMe?.isFamily ? "To add a family member or change contact details," : "To change your contact details or add a family member,",
+  };
+  const empty = !loading && !!data && (!student || (!data.notes.length && !data.videos.length && !data.history.length));
+  const sub = { loading, notLoading: !loading, empty, normal: !loading && !empty && !!data, default: !loading };
+  const firstName = student?.firstName ?? "your student";
+
+  const ob = (() => {
+    const items = [
+      { title: "Confirm your details", sub: student ? `${student.fullName} · ${student.styleLine}` : "Zane is finishing your setup.", done: !!student },
+      { title: "Turn on two-factor authentication", sub: "A six-digit code from your phone each time you sign in.", done: sec.tfa.on, cta: "Turn on", go: sec.tfa.open },
+    ].map((t: any) => ({ ...t, todo: !t.done, doneFlag: t.done, icon: t.done ? "ph-fill ph-check-circle" : "ph ph-circle", iconColor: t.done ? "#4A6149" : "rgba(17,22,27,.3)", color: t.done ? "rgba(17,22,27,.5)" : "#11161B" }));
+    const n = items.filter((t) => t.done).length;
+    return {
+      items,
+      progress: `${n} of ${items.length} complete`,
+      headline: kidNextLesson ? `Welcome, ${acct.owner}. ${firstName}'s first lesson is ${next.date.split(", ")[1]}` : `Let's book ${firstName}'s first lesson`,
+      sub: "Notes, practice videos and lesson history will appear here after each lesson.",
+    };
+  })();
+
+  const d = dialog, dk = d?.kind ?? "", dd = d?.data ?? {};
+  const dv = dd.video ? { id: dd.video.id, title: dd.video.title, cat: dd.video.category, desc: dd.video.description, dur: dd.video.durationLabel, assigned: fmt(dd.video.assignedAt, { month: "short", day: "numeric" }), watchedMarked: !readOnly } : {};
+  const dn = dd.note ?? {};
+  const dlgTitles: any = { enroll2fa: "Security", autopay: "Set up auto-pay", book: rsLesson ? "Reschedule your lesson" : "Book a lesson with Zane", pay: `Pay invoice #${firstOpen?.number ?? ""}`, invoice: selected ? `Invoice #${selected.number}` : "Invoices", schedule: `${firstName}'s upcoming lessons`, video: dv.title, note: `${dn.date ?? ""} — ${firstName}`, family: acctMe?.isFamily ? "Family & profile" : "Profile", recovery: "Recovery codes", packages: pkgStep === 2 ? "Review and pay" : "Buy a lesson package" };
+  const dlgKickers: any = { enroll2fa: "Security", autopay: "Recurring payments", book: "Scheduling", pay: "Secure payment", invoice: "Billing", schedule: "Schedule", video: dv.cat, note: "Teacher note", family: acct.label, recovery: "Security", packages: "Lesson packages" };
+  const dlg: any = { open: !!d, width: dk === "book" ? "860px" : dk === "note" ? "640px" : dk === "packages" ? "560px" : "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
+  ["book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
+
+  const features = me?.features;
+  const ap = {
+    on: false, off: true, status: "Off", color: "rgba(17,22,27,.45)", btn: "Turn on",
+    line: "Pay each lesson automatically with Stripe Link.",
+    schedule: "your lessons", nextCharge: "your next lesson",
+    intro: "Auto-pay isn't switched on yet. When it is, each lesson can be charged to your saved Stripe Link payment method.",
+  };
+  const sched = (data?.upcoming ?? []).map((l, i) => ({
+    date: fmt(l.startTime, { weekday: "short", month: "short", day: "numeric" }),
+    time: `${clock(l.startTime)} – ${clock(l.endTime)}`,
+    loc: l.locationLabel,
+    status: i === 0 && unpaid ? "Unpaid" : "Booked",
+    color: i === 0 && unpaid ? "#9C5F22" : "#1D2A44",
+  }));
+
+  return {
+    is: { student: true, twofa: false, settings: false },
+    sub, unpaid: unpaid && !loading, paid: paid && !loading, bal, loadError,
+    today: todayLabel(), greeting: greeting(), historySince: history.length ? `Since ${history[history.length - 1].date}` : "No lessons yet",
+    mobile: vp.mobile, notMobile: !vp.mobile,
+    cols: vp.width >= 1000 ? { nextSpan: "span 2", balSpan: "auto" } : { nextSpan: "1/-1", balSpan: "1/-1" },
+    menuOpen, toggleMenu: () => setMenuOpen((o) => !o),
+    acct, kid: { name: firstName, full: student?.fullName ?? "", style: student?.styleLine ?? "", next, noteCount: notes.length, notes, history },
+    kidTabs: (data?.students ?? []).map((s) => ({ label: s.firstName, pick: () => { setChildId(s.id); setOpenNote(0); }, bg: s.id === student?.id ? "#1D2A44" : "transparent", color: s.id === student?.id ? "#fff" : "rgba(17,22,27,.7)" })),
+    multiKids: (data?.students.length ?? 0) > 1,
+    kidVideos: videos,
+    catChips: CATS.map((c) => ({ label: c, pick: () => setCat(c), bg: c === cat ? "#1D2A44" : "transparent", color: c === cat ? "#fff" : "rgba(17,22,27,.7)", border: c === cat ? "#1D2A44" : "rgba(17,22,27,.15)" })),
+    showWatched: true,
+    ...sec,
+    tfa: { ...sec.tfa, banner: !sec.tfa.on && !readOnly && !loading },
+    ob, rs, bk, ap, dlg, dv, dn, inv: invView, sched, form, familyRows,
+    hasLessonCal: false, noLessonCal: true, lessonCalUrl: "",
+    invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: statusWord[i.status] ?? i.status, on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
+    f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),
+    openBook, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
+    openAutopay: () => open("autopay"), openRecovery: () => open("recovery"),
+    closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
+    payUrl: "#", payNow, autopayUrl: "#",
+    enableAutopay: (e: any) => { e?.preventDefault?.(); flash(NOT_ACTIVE); }, disableAutopay: close,
+    downloadInvoice: () => flash("Invoice PDFs are available from your emailed invoice for now."),
+    pkgLive: !!features?.packages, pkgSoon: !features?.packages, pkgBtnLabel: "Buy a package", pkgCreditLine: "Prepay 4, 8 or 12 lessons at a discount.",
+    openPackages: () => { setPkgStep(1); open("packages"); },
+    pkg: { step1: pkgStep === 1, step2: pkgStep === 2, step3: false, sel: PACKAGES[pkgChoice], targetLabel: acct.label, next: () => flash(NOT_ACTIVE), back: () => setPkgStep(1), pay: () => flash(NOT_ACTIVE) },
+    pkgCards: PACKAGES.map((p) => ({ ...p, on: p.id === pkgChoice, pick: () => setPkgChoice(p.id), bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : "#fff", border: p.id === pkgChoice ? "#1D2A44" : "rgba(17,22,27,.12)" })),
+    pkgTargets: [],
+    ref: {
+      inactive: !features?.referrals, code: "Not active yet", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
+      setEmail: (e: any) => setRefEmail(e.target.value), copyCode: () => flash(NOT_ACTIVE), copyLink: () => flash(NOT_ACTIVE), send: () => flash(NOT_ACTIVE),
+    },
+    viewAs: readOnly,
+    backToProfile: () => navigate(previewId ? `/teacher/students/${previewId}` : "/teacher"),
+    backToTeacher: () => navigate("/teacher"),
+    go: { signin: () => void signOut().then(() => navigate("/signin")) },
+    refreshMe, params, copy, TZ, OUTSTANDING_BALANCE_MESSAGE,
+  };
+}

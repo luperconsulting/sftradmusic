@@ -11,6 +11,7 @@ export default defineConfig(() => {
         input: {
           main: path.resolve(__dirname, 'index.html'),
           book: path.resolve(__dirname, 'book.html'),
+          portal: path.resolve(__dirname, 'portal.html'),
         },
       },
     },
