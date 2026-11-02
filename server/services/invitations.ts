@@ -3,6 +3,8 @@ import { ApiError } from "../http.js";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
+/** Email OTP codes. Supabase must use the same one-hour expiry. */
+export const INVITE_CODE_TTL_MS = 60 * 60 * 1000;
 
 export const hashCredential = (value: string) =>
   createHash("sha256").update(normalizeCredential(value)).digest("hex");
@@ -27,9 +29,9 @@ export function inviteeFullName(name: string, email: string) {
   return local || email;
 }
 
-/** Where Supabase sends the teacher’s invite after the recipient opens the email. Built only from this deployment's APP_URL. */
-export function portalInviteRedirect(appUrl: string, token: string) {
-  return `${appUrl.replace(/\/$/, "")}/invite?token=${encodeURIComponent(token)}`;
+/** The page where the invitee types the email and the one-time code. No secret belongs in this URL. */
+export function portalInvitePage(appUrl: string) {
+  return `${appUrl.replace(/\/$/, "")}/invite`;
 }
 
 /**

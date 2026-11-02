@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
 import { loadConfig, safeInviteAllowlist } from "../server/config";
-import { portalInviteRedirect } from "../server/services/invitations";
+import { portalInvitePage } from "../server/services/invitations";
 import { buildDeps, fakeGhl, STUDENT_A } from "./helpers";
 
 const ARZO = "luperdev@gmail.com";
@@ -31,12 +31,10 @@ function teacherApp(over: { safeMode?: boolean; allowlist?: string[]; appUrl?: s
 const arzoInvite = { method: "email", role: "student", email: "LuperDev@gmail.com", name: "Arzo Luper", studentIds: [STUDENT_A] };
 
 describe("portal invitation email", () => {
-  it("builds the redirect from this deployment's APP_URL", () => {
-    const url = new URL(portalInviteRedirect("https://preview.example.com/", "tok en"));
-    expect(url.origin).toBe(PREVIEW);
-    expect(url.pathname).toBe("/invite");
-    expect(url.searchParams.get("token")).toBe("tok en");
-    expect(url.href).not.toContain("sftradmusic.com");
+  it("sends people to this deployment's invite page, with no code in the URL", () => {
+    expect(portalInvitePage("https://preview.example.com/")).toBe(`${PREVIEW}/invite`);
+    expect(portalInvitePage(PREVIEW)).not.toContain("token=");
+    expect(portalInvitePage(PREVIEW)).not.toContain("sftradmusic.com");
   });
 
   it("defaults the safe-mode allowlist to Arzo and lets an env var replace it", () => {
@@ -47,21 +45,20 @@ describe("portal invitation email", () => {
     expect(loadConfig({ VERCEL_ENV: "production", SAFE_MODE_EMAIL_ALLOWLIST: ARZO }).safeMode).toBe(false);
   });
 
-  it("emails Arzo through Supabase in safe mode, using the Preview redirect, and does not call GoHighLevel", async () => {
-    const { post, sendPortalInvite, attachInvitationAuthUser, audit, sendInvoice } = teacherApp({ safeMode: true });
+  it("emails Arzo a code through Supabase in safe mode, and does not call GoHighLevel", async () => {
+    const { post, sendPortalInvite, attachInvitationAuthUser, audit, sendInvoice, createInvitation } = teacherApp({ safeMode: true });
     const res = await post(arzoInvite);
     expect(res.status).toBe(200);
     expect(res.body.emailed).toBe(true);
-    const redirect = res.body.inviteUrl as string;
-    expect(new URL(redirect).origin).toBe(PREVIEW);
-    expect(new URL(redirect).pathname).toBe("/invite");
-    expect(new URL(redirect).searchParams.get("token")).toBe(res.body.credential);
-    expect(redirect).not.toContain("www.sftradmusic.com");
+    expect(res.body.inviteUrl).toBe(`${PREVIEW}/invite`);
+    expect(res.body.credential).toBeUndefined();
     expect(sendPortalInvite).toHaveBeenCalledTimes(1);
-    expect(sendPortalInvite).toHaveBeenCalledWith(ARZO, redirect);
-    expect(attachInvitationAuthUser).toHaveBeenCalledWith("inv-arzo", "auth-user-arzo");
+    expect(sendPortalInvite).toHaveBeenCalledWith(ARZO, `${PREVIEW}/invite`);
+    expect(attachInvitationAuthUser).not.toHaveBeenCalled();
     expect(sendInvoice).not.toHaveBeenCalled();
-    expect(JSON.stringify(audit.mock.calls)).not.toContain(res.body.credential);
+    const expiresIn = new Date((createInvitation.mock.calls as any)[0][0].expiresAt).getTime() - Date.now();
+    expect(expiresIn).toBeGreaterThan(50 * 60 * 1000);
+    expect(expiresIn).toBeLessThan(61 * 60 * 1000);
     expect(audit).toHaveBeenCalledWith("teach", "invitation.create", "inv-arzo", { method: "email", emailed: true });
   });
 
@@ -79,7 +76,7 @@ describe("portal invitation email", () => {
     const { post, sendPortalInvite } = teacherApp({ safeMode: false, allowlist: [] });
     const res = await post({ ...arzoInvite, email: "other@example.com" });
     expect(res.status).toBe(200);
-    expect(sendPortalInvite).toHaveBeenCalledWith("other@example.com", res.body.inviteUrl);
+    expect(sendPortalInvite).toHaveBeenCalledWith("other@example.com", `${PREVIEW}/invite`);
   });
 
   it("does not email an enrollment code", async () => {
@@ -135,8 +132,10 @@ describe("portal invitation email", () => {
     const first = await post({ email: ARZO, name: "Arzo Luper" });
     const res = await request(createApp(deps)).post("/api/teacher/invitations/11111111-1111-4111-8111-111111111111/resend").set("Authorization", "Bearer teach");
     expect(res.status).toBe(200);
-    expect(res.body.credential).not.toBe(first.body.credential);
-    expect(res.body.inviteUrl).not.toBe(first.body.inviteUrl);
+    expect(res.body.inviteUrl).toBe(`${PREVIEW}/invite`);
+    expect(res.body.inviteUrl).toBe(first.body.inviteUrl);
+    const hashes = createInvitation.mock.calls.map((c: any) => c[0].tokenHash);
+    expect(hashes[0]).not.toBe(hashes[1]);
     expect(revokePendingForEmail).toHaveBeenCalledWith(ARZO);
     expect(sendPortalInvite).toHaveBeenCalledTimes(2);
     expect(createInvitation.mock.calls.every((c: any) => c[0].studentIds.length === 0)).toBe(true);
@@ -216,5 +215,84 @@ describe("accepting an invitation", () => {
     expect(audit).toHaveBeenCalledWith(null, "student.create_failed", "", { createdContactIds: ["new-contact"] });
     expect(createUser).not.toHaveBeenCalled();
     expect(releaseInvitation).toHaveBeenCalledWith("i");
+  });
+});
+
+describe("email code verification", () => {
+  const code = "482913";
+  const pending = {
+    id: "i",
+    tokenHash: "h",
+    method: "email" as const,
+    email: ARZO,
+    name: "Arzo Luper",
+    role: "student" as const,
+    studentIds: [] as string[],
+    status: "pending" as const,
+    expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
+    preview: { firstName: "Arzo", studentLine: "Not enrolled yet", accountFor: "Arzo Luper · student", lessons: "", format: "In person" },
+  };
+
+  it("verifies Arzo's code once, then creates the student and returns a session", async () => {
+    const verifyEmailOtp = vi.fn(async () => ({ userId: "auth-arzo", accessToken: "access", refreshToken: "refresh" }));
+    const createUser = vi.fn();
+    const createContact = vi.fn();
+    const createStudent = vi.fn(async (i: any) => ({ ...i, id: "33333333-3333-4333-8333-333333333333", firstName: "Arzo", styleLine: "", studentSince: null }));
+    const createAccountForInvitation = vi.fn(async () => undefined);
+    let open = true;
+    const ghl = fakeGhl({ createContact, findContactByEmail: async (email) => (email === ARZO ? { id: "RQgd4luPVk9r2srPBlHr", name: "Arzo Luper", email } : null) });
+    const deps = buildDeps({}, ghl, {
+      findPendingInvitationByEmail: async () => (open ? pending : null),
+      claimInvitation: async () => { open = false; return true; },
+      createStudent,
+      createAccountForInvitation,
+      listStudents: async () => [],
+    } as any);
+    (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
+    (deps.auth as any).createUser = createUser;
+    const app = createApp(deps);
+    const ok = await request(app).post("/api/invitations/verify-code").send({ email: "LuperDev@gmail.com", code });
+    expect(ok.status).toBe(200);
+    expect(ok.body).toMatchObject({ accessToken: "access", refreshToken: "refresh", email: ARZO });
+    expect(verifyEmailOtp).toHaveBeenCalledTimes(1);
+    expect(verifyEmailOtp).toHaveBeenCalledWith(ARZO, code);
+    expect(createContact).not.toHaveBeenCalled();
+    expect(createUser).not.toHaveBeenCalled();
+    expect((createStudent.mock.calls as any)[0][0]).toMatchObject({ email: ARZO, ghlContactId: "RQgd4luPVk9r2srPBlHr" });
+    expect((createAccountForInvitation.mock.calls as any)[0][0].studentIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
+    const again = await request(app).post("/api/invitations/verify-code").send({ email: ARZO, code });
+    expect(again.status).toBe(404);
+    expect(verifyEmailOtp).toHaveBeenCalledTimes(1);
+  });
+
+  it("rejects an expired code before asking Supabase", async () => {
+    const verifyEmailOtp = vi.fn();
+    const deps = buildDeps({}, fakeGhl(), {
+      findPendingInvitationByEmail: async () => ({ ...pending, expiresAt: new Date(Date.now() - 1000).toISOString() }),
+    } as any);
+    (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
+    const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
+    expect(res.status).toBe(410);
+    expect(res.body.error.code).toBe("invitation_expired");
+    expect(verifyEmailOtp).not.toHaveBeenCalled();
+  });
+
+  it("rejects a code Supabase will not accept, and does not create a student", async () => {
+    const verifyEmailOtp = vi.fn(async () => null);
+    const createStudent = vi.fn();
+    const claimInvitation = vi.fn();
+    const deps = buildDeps({}, fakeGhl(), { findPendingInvitationByEmail: async () => pending, createStudent, claimInvitation } as any);
+    (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
+    const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
+    expect(res.status).toBe(401);
+    expect(createStudent).not.toHaveBeenCalled();
+    expect(claimInvitation).not.toHaveBeenCalled();
+  });
+
+  it("rate limits code attempts", async () => {
+    const app = createApp(buildDeps({}, null, { findPendingInvitationByEmail: async () => null } as any));
+    let last = 0;
+    for (let i = 0; i < 9; i++) last = (await request(app).post("/api/invitations/verify-code").send({ email: ARZO, code: "123456" })).status;
+    expect(last).toBe(429);
   });
 });

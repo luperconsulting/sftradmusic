@@ -106,6 +106,8 @@ export interface PortalStore {
   listInvitations(): Promise<InvitationDTO[]>;
   createInvitation(input: Omit<InvitationRecord, "id" | "status">): Promise<InvitationRecord>;
   findInvitationByHash(hash: string): Promise<InvitationRecord | null>;
+  /** Newest pending invite for this email, including one whose clock has run out. */
+  findPendingInvitationByEmail(email: string): Promise<InvitationRecord | null>;
   /** Atomically claims a pending, unexpired invitation. Returns false if it was already used. */
   claimInvitation(id: string): Promise<boolean>;
   releaseInvitation(id: string): Promise<void>;
@@ -131,11 +133,13 @@ export interface AuthAdmin {
   createUser(email: string, password: string, existingUserId?: string | null): Promise<string>;
   deleteUser(userId: string): Promise<void>;
   /**
-   * Emails a Supabase invite. If that address already has a login, emails a magic link instead.
-   * Returns the new user's id, or null when a magic link was sent to an existing login.
-   * redirectTo must be this deployment's own invite URL.
+   * Emails a Supabase one-time code (signInWithOtp). The message is the Magic Link template.
+   * redirectTo is only a fallback if that template still contains a link. It must be this deployment's /invite page.
+   * Returns null: the login is confirmed only when the code is verified.
    */
   sendPortalInvite(email: string, redirectTo: string): Promise<string | null>;
+  /** Checks a 6-digit email code. Null when Supabase rejects it. Does not log the code. */
+  verifyEmailOtp(email: string, code: string): Promise<{ userId: string; accessToken: string; refreshToken: string } | null>;
   sendPasswordReset(email: string): Promise<void>;
   setBanned(userId: string, banned: boolean): Promise<void>;
 }
