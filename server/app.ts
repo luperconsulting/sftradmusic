@@ -11,7 +11,7 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
-import { hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken } from "./services/invitations.js";
+import { assertPortalInviteEmail, hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken, portalInviteRedirect } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
 import type { AuthAdmin, PortalStore, StudentRecord } from "./store/types.js";
@@ -185,7 +185,16 @@ export function createApp(deps: Deps) {
     limiter.hit(`invite-verify:${clientKey(req)}`, 10, 15 * 60000);
     const { credential } = parse(z.object({ credential: z.string().trim().min(8).max(200) }), req.body);
     const invite = await findLiveInvite(credential);
-    const preview: InvitationPreview = { ...invite.preview, email: invite.email, expiresAt: invite.expiresAt };
+    // Listed field by field so a server-only auth user id stored on the row never reaches the browser.
+    const preview: InvitationPreview = {
+      firstName: invite.preview.firstName,
+      studentLine: invite.preview.studentLine,
+      accountFor: invite.preview.accountFor,
+      lessons: invite.preview.lessons,
+      format: invite.preview.format,
+      email: invite.email,
+      expiresAt: invite.expiresAt,
+    };
     return preview;
   }));
 
@@ -197,7 +206,7 @@ export function createApp(deps: Deps) {
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
     let userId: string | null = null;
     try {
-      userId = await auth.createUser(invite.email, pw);
+      userId = await auth.createUser(invite.email, pw, invite.preview.authUserId);
       await store.createAccountForInvitation(invite, userId);
     } catch (e) {
       // Undo the half-made login too. Otherwise a retry fails forever because the email is already taken.
@@ -593,10 +602,12 @@ export function createApp(deps: Deps) {
   teacher.get("/invitations", wrap(async () => ({ invitations: await needStore().store.listInvitations() })));
   teacher.post("/invitations", wrap(async (req) => {
     const input = parse(inviteSchema, req.body);
-    const { store } = needStore();
+    const { store, auth } = needStore();
     const students = await store.getStudents(input.studentIds);
     if (students.length !== input.studentIds.length) throw notFound("That student wasn't found.");
     const credential = input.method === "code" ? newEnrollmentCode() : newInviteToken();
+    const inviteUrl = input.method === "email" ? portalInviteRedirect(config.appUrl, credential) : undefined;
+    if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
     const first = students[0];
     const invite = await store.createInvitation({
       tokenHash: hashCredential(credential),
@@ -614,8 +625,20 @@ export function createApp(deps: Deps) {
         format: first.format,
       },
     });
-    await audit(req, "invitation.create", invite.id, { method: input.method });
-    // The plain credential is returned once and never stored.
+    let emailed = false;
+    if (inviteUrl) {
+      try {
+        const authUserId = await auth.sendPortalInvite(input.email, inviteUrl);
+        if (authUserId) await store.attachInvitationAuthUser(invite.id, authUserId).catch(() => undefined);
+        emailed = true;
+      } catch (e) {
+        await store.revokeInvitation(invite.id).catch(() => undefined);
+        if (e instanceof ApiError) throw e;
+        throw new ApiError(503, "invite_email_failed", "The invitation email wasn't sent. Please try again.");
+      }
+    }
+    await audit(req, "invitation.create", invite.id, { method: input.method, emailed });
+    // The plain credential is returned once and never stored. The email itself is sent by Supabase, not GoHighLevel.
     return {
       id: invite.id,
       name: invite.name,
@@ -627,7 +650,8 @@ export function createApp(deps: Deps) {
       expiresAt: invite.expiresAt,
       accountId: null,
       credential,
-      inviteUrl: input.method === "email" ? `${config.appUrl}/invite?token=${encodeURIComponent(credential)}` : undefined,
+      emailed,
+      inviteUrl,
     };
   }));
   teacher.post("/invitations/:id/revoke", wrap(async (req) => {

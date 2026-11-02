@@ -49,7 +49,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   }
   if (p === "/teacher/invitations" && opts.method === "POST") {
     const b = opts.body as any;
-    return { id: crypto.randomUUID(), name: b.name, email: b.email, studentName: "", status: b.method === "code" ? "code_issued" : "pending", method: b.method, credential: "SFTM-SAMP-LE00", inviteUrl: "http://localhost:3000/invite?token=sample" };
+    return { id: crypto.randomUUID(), name: b.name, email: b.email, studentName: "", status: b.method === "code" ? "code_issued" : "pending", method: b.method, credential: "SFTM-SAMP-LE00", emailed: b.method === "email", inviteUrl: b.method === "email" ? "http://localhost:3000/invite?token=sample" : undefined };
   }
   if (p === "/me") {
     const teacher = isTeacherPath();

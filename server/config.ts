@@ -15,6 +15,10 @@ export interface ServerConfig {
     safeMode: boolean;
   } | null;
   ghlWebhookPublicKey: string | null;
+  /** Same switch as GoHighLevel safe mode. It does not suppress Supabase auth mail. */
+  safeMode: boolean;
+  /** Used only while safe mode is on. Portal invitation email is limited to these addresses. */
+  safeModeEmailAllowlist: string[];
   videoBucket: string;
   features: {
     packages: boolean;
@@ -37,6 +41,16 @@ export function ghlSafeMode(env: Record<string, string | undefined>): boolean {
   return env.NODE_ENV !== "production";
 }
 
+/** The one address a Preview teacher can invite when SAFE_MODE_EMAIL_ALLOWLIST is unset. */
+export const DEFAULT_SAFE_INVITE_ALLOWLIST = ["luperdev@gmail.com"];
+
+/** Comma, semicolon, or whitespace separated. An empty value keeps the default test address. */
+export function safeInviteAllowlist(env: Record<string, string | undefined>): string[] {
+  const raw = env.SAFE_MODE_EMAIL_ALLOWLIST;
+  if (raw === undefined || raw.trim() === "") return [...DEFAULT_SAFE_INVITE_ALLOWLIST];
+  return [...new Set(raw.split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean))];
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
   const supabaseUrl = env.SUPABASE_URL;
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
@@ -45,6 +59,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const calendarId = env.GHL_LESSON_CALENDAR_ID;
   // A public key here would make every store call fail on RLS, so treat it as not configured.
   const usableServerKey = !!serviceRoleKey && supabaseKeyKind(serviceRoleKey) !== "public";
+  const safeMode = ghlSafeMode(env);
   return {
     appUrl: env.APP_URL || "http://localhost:3000",
     supabase: supabaseUrl && usableServerKey ? { url: supabaseUrl, serviceRoleKey: serviceRoleKey! } : null,
@@ -56,10 +71,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
             lessonCalendarId: calendarId,
             timezone: env.GHL_TIMEZONE || "America/Los_Angeles",
             invoiceSenderUserId: env.GHL_INVOICE_SENDER_USER_ID || null,
-            safeMode: ghlSafeMode(env),
+            safeMode,
           }
         : null,
     ghlWebhookPublicKey: env.GHL_WEBHOOK_PUBLIC_KEY || null,
+    safeMode,
+    safeModeEmailAllowlist: safeInviteAllowlist(env),
     videoBucket: env.SUPABASE_VIDEO_BUCKET || "lesson-videos",
     // Financial features stay off until reviewed, and switching one on only unlocks a route if its backend exists.
     features: { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false },

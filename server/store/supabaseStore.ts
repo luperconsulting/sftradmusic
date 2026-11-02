@@ -311,6 +311,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async revokeInvitation(id) {
       must(await db.from("invitations").update({ status: "revoked" }).eq("id", id));
     },
+    async attachInvitationAuthUser(id, authUserId) {
+      const row = must(await db.from("invitations").select("preview").eq("id", id).single()) as { preview: Record<string, unknown> };
+      must(await db.from("invitations").update({ preview: { ...row.preview, authUserId } }).eq("id", id));
+    },
     async createAccountForInvitation(invite, userId) {
       const acct: any = must(await db.from("accounts").insert({ user_id: userId, role: invite.role, email: invite.email, display_name: invite.name }).select().single());
       must(await db.from("account_students").insert(invite.studentIds.map((student_id) => ({ account_id: acct.id, student_id }))));
@@ -328,6 +332,30 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
   };
 }
 
+const isExistingLogin = (error: { code?: string; message?: string } | null) =>
+  !!error && (error.code === "email_exists" || error.code === "user_already_exists" || /already (been )?registered/i.test(error.message ?? ""));
+
+async function setLoginPassword(admin: SupabaseClient, userId: string, password: string) {
+  const { data, error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true });
+  if (error || !data.user) throw new Error("auth: could not create user");
+  return data.user.id;
+}
+
+async function findUserIdByEmail(url: string, serviceRoleKey: string, email: string) {
+  let res: Response;
+  try {
+    res = await fetch(`${url}/auth/v1/admin/users?filter=${encodeURIComponent(email)}`, {
+      headers: { Authorization: `Bearer ${serviceRoleKey}`, apikey: serviceRoleKey },
+    });
+  } catch {
+    return null;
+  }
+  if (!res.ok) return null;
+  const body = await res.json().catch(() => null) as { users?: { id?: string; email?: string }[] } | null;
+  const match = (body?.users ?? []).find((u) => (u.email ?? "").toLowerCase() === email.toLowerCase());
+  return match?.id ?? null;
+}
+
 export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, appUrl: string): AuthAdmin {
   const admin = createClient(url, serviceRoleKey, { auth: { persistSession: false, autoRefreshToken: false } });
   return {
@@ -343,10 +371,26 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
         mfaEnrolled: (data.user.factors ?? []).some((f) => f.status === "verified"),
       };
     },
-    async createUser(email, password) {
+    async createUser(email, password, existingUserId) {
+      if (existingUserId) return setLoginPassword(admin, existingUserId, password);
       const { data, error } = await admin.auth.admin.createUser({ email, password, email_confirm: true });
-      if (error || !data.user) throw new Error("auth: could not create user");
-      return data.user.id;
+      if (!error && data.user) return data.user.id;
+      if (!isExistingLogin(error)) throw new Error("auth: could not create user");
+      const id = await findUserIdByEmail(url, serviceRoleKey, email);
+      if (!id) throw new Error("auth: could not create user");
+      return setLoginPassword(admin, id, password);
+    },
+    async sendPortalInvite(email, redirectTo) {
+      // Supabase sends this mail. GoHighLevel safe mode does not apply, and the redirect is the caller's URL.
+      const invited = await admin.auth.admin.inviteUserByEmail(email, { redirectTo });
+      if (!invited.error && invited.data.user) return invited.data.user.id;
+      if (!isExistingLogin(invited.error)) throw new Error("auth: could not send invitation");
+      const magic = await admin.auth.signInWithOtp({
+        email,
+        options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
+      });
+      if (magic.error) throw new Error("auth: could not send invitation");
+      return null;
     },
     async deleteUser(userId) {
       const { error } = await admin.auth.admin.deleteUser(userId);

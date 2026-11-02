@@ -536,7 +536,7 @@ export function useTeacherVM(screen: string): VM {
     // Invitations
     invites: inviteRows,
     invMethods: [["email", "Email a link", "ph ph-envelope-simple"], ["code", "Enrollment code", "ph ph-key"]].map(([id, label, icon]) => ({ label, icon, on: invMethod === id, pick: () => setInvMethod(id as any), bg: invMethod === id ? "#1D2A44" : "transparent", color: invMethod === id ? "#fff" : "rgba(17,22,27,.7)" })),
-    invSendLabel: invMethod === "code" ? "Generate code" : "Create invitation link", invSendIcon: invMethod === "code" ? "ph ph-key" : "ph ph-paper-plane-tilt",
+    invSendLabel: invMethod === "code" ? "Generate code" : "Email invitation", invSendIcon: invMethod === "code" ? "ph ph-key" : "ph ph-paper-plane-tilt",
     roleOpts: [["Parent / guardian", "A child", "ph ph-baby"], ["Adult student", "An adult", "ph ph-user"]].map(([r, label, icon]) => ({ label, icon, on: invRole === r, pick: () => setInvRole(r), bg: invRole === r ? "#1D2A44" : "transparent", color: invRole === r ? "#fff" : "rgba(17,22,27,.7)" })),
     isChild: !isAdult, isAdult, roleHint: isAdult ? "The student owns the account: they sign in, see their notes and pay their own invoices." : "The parent owns the account: they sign in, see notes and pay invoices. Siblings can share one login.",
     invEmail, setInvEmail: (e: any) => setInvEmail(e.target.value), invName, setInvName: (e: any) => setInvName(e.target.value), invStudentId, setInvStudent: (e: any) => chooseInvStudent(e.target.value, students),
@@ -554,7 +554,7 @@ export function useTeacherVM(screen: string): VM {
       setInvEmail("");
       setInvName("");
       await refreshInvites();
-      flash(created.method === "code" ? `Enrollment code ${shown} created and copied. Share it with the family. It's only shown this once.` : `Invitation link copied. Send it to ${email}. It's only shown this once.`);
+      flash(created.method === "code" ? `Enrollment code ${shown} created and copied. Share it with the family. It's only shown this once.` : `Invitation emailed to ${email}. The link opens this site's invite page. A copy was also copied here, and it's only shown this once.`);
     }),
     // Migrate
     migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),

@@ -140,6 +140,8 @@ export interface InvitationDTO {
   /** Only ever present in the response that created it. Only a hash is stored. */
   credential?: string;
   inviteUrl?: string;
+  /** True when Supabase accepted the invitation email. Safe mode does not turn this off for an allowlisted address. */
+  emailed?: boolean;
 }
 
 export interface InvitationPreview {
