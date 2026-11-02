@@ -1,5 +1,6 @@
 // Reads server configuration. Anything missing leaves that integration "not configured", and the routes
 // depending on it fail with 503. Nothing falls back to simulated data.
+import { featuresForEnv } from "./features.js";
 import { supabaseKeyKind } from "../shared/supabase-keys.js";
 
 export interface ServerConfig {
@@ -78,7 +79,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     safeMode,
     safeModeEmailAllowlist: safeInviteAllowlist(env),
     videoBucket: env.SUPABASE_VIDEO_BUCKET || "lesson-videos",
-    // Financial features stay off until reviewed, and switching one on only unlocks a route if its backend exists.
-    features: { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false },
+    // A passing flag can be true on Preview only. Production is always off. See server/features.ts.
+    features: featuresForEnv(env),
   };
 }
