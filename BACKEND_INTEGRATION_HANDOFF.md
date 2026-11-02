@@ -133,6 +133,12 @@ No GHL custom fields or objects are required. Invitations create the `accounts` 
 
 Lesson notes, drafts, video files and assignments for minors need row-level privacy, private drafts and expiring playback links. GHL custom fields and media don't provide those documented guarantees, so this data is in Supabase. The design's "stored in GHL Media" copy was changed to "stored privately" for that reason.
 
+## Adding students
+
+Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both create a row in `students`, linked to a real GHL contact the server checks first, and the student appears straight away in the Account Invitations dropdown, which fills in their details when chosen.
+
+**Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and confirm the GHL token has `contacts.readonly`. `POST /contacts/search` hasn't been called live yet. One GHL contact can link to only one student (`ghl_contact_id` is unique), so siblings need separate contacts, with the parent as their billing contact.
+
 ## 3. Payments
 
 **Pay Now emails the customer their invoice link through GoHighLevel. Invoice notifications from the portal are email-only (owner's decision). It has not been run live.**

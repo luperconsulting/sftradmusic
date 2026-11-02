@@ -37,9 +37,19 @@ export interface GhlClient {
   listCalendarEvents(fromMs: number, toMs: number): Promise<GhlAppointment[]>;
   listInvoices(query: { contactId?: string; limit?: number; offset?: number }): Promise<{ invoices: any[]; total: number }>;
   getInvoice(invoiceId: string): Promise<any>;
+  searchContacts(query: string): Promise<GhlContact[]>;
+  getContact(contactId: string): Promise<GhlContact>;
   /** Sends an existing invoice to the contact it's addressed to. This delivers real messages. */
   sendInvoice(invoiceId: string, input: { userId: string; liveMode: boolean }): Promise<unknown>;
 }
+
+export interface GhlContact { id: string; name: string; email: string | null }
+
+const toContact = (c: any): GhlContact => ({
+  id: c.id,
+  name: c.contactName || c.name || [c.firstName ?? c.firstNameLowerCase, c.lastName ?? c.lastNameLowerCase].filter(Boolean).join(" ") || c.email || "Unnamed contact",
+  email: c.email ?? null,
+});
 
 export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fetch): GhlClient {
   async function call(path: string, version: string, init: RequestInit = {}) {
@@ -118,6 +128,17 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
       const q = invoiceQuery({ limit: String(limit), offset: String(offset), ...(contactId ? { contactId } : {}) });
       const data = await call(`/invoices/?${q}`, CRM_VERSION);
       return { invoices: data.invoices ?? [], total: data.total ?? 0 };
+    },
+    async searchContacts(query) {
+      const data = await call("/contacts/search", CRM_VERSION, {
+        method: "POST",
+        body: JSON.stringify({ locationId: config.locationId, page: 1, pageLimit: 25, ...(query ? { query } : {}) }),
+      });
+      return (data.contacts ?? []).map(toContact);
+    },
+    async getContact(contactId) {
+      const data = await call(`/contacts/${encodeURIComponent(contactId)}`, CRM_VERSION);
+      return toContact(data.contact ?? data);
     },
     getInvoice: (invoiceId) => call(`/invoices/${encodeURIComponent(invoiceId)}?${invoiceQuery({})}`, CRM_VERSION),
     sendInvoice: (invoiceId, input) =>

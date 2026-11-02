@@ -32,11 +32,25 @@ function dashboard(): DashboardResponse {
   };
 }
 
-const rows = (): TeacherStudentRow[] => [student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, accountId: A, portalStatus: "active", transferPending: false, ghlContactId: "sample", billingContactId: "sample" }));
+const sampleContacts = [{ id: "c-rowan", name: "Rowan Sample", email: "rowan@example.com" }, { id: "c-parent", name: "Pat Sample", email: "pat@example.com" }];
+const addedStudents: any[] = [];
+
+const rows = (): TeacherStudentRow[] => [...addedStudents, student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, accountId: A, portalStatus: "active", transferPending: false, ghlContactId: "sample", billingContactId: "sample" }));
 
 export async function demoApi(path: string, opts: { method?: string; body?: unknown }) {
   await new Promise((r) => setTimeout(r, 150));
   const p = path.split("?")[0];
+  if (p === "/teacher/ghl/contacts") return { contacts: sampleContacts.map((c) => ({ ...c, studentName: addedStudents.find((s) => s.ghlContactId === c.id)?.fullName ?? null })) };
+  if (p === "/teacher/students" && opts.method === "POST") {
+    const b = opts.body as any;
+    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId };
+    addedStudents.push(s);
+    return { student: { id: s.id, fullName: s.fullName } };
+  }
+  if (p === "/teacher/invitations" && opts.method === "POST") {
+    const b = opts.body as any;
+    return { id: crypto.randomUUID(), name: b.name, email: b.email, studentName: "", status: b.method === "code" ? "code_issued" : "pending", method: b.method, credential: "SFTM-SAMP-LE00", inviteUrl: "http://localhost:3000/invite?token=sample" };
+  }
   if (p === "/me") {
     const teacher = isTeacherPath();
     const me: MeResponse = {

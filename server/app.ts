@@ -72,6 +72,17 @@ const inviteSchema = z.object({
   studentIds: z.array(uuid).min(1).max(10),
 });
 
+const optionalEmail = z.string().trim().toLowerCase().email().max(200).or(z.literal("")).optional();
+const studentSchema = z.object({
+  fullName: z.string().trim().min(1).max(120),
+  ageCategory: z.enum(["child", "adult"]),
+  email: optionalEmail,
+  guardianName: z.string().trim().max(120).optional(),
+  guardianEmail: optionalEmail,
+  ghlContactId: z.string().trim().min(1).max(100),
+  billingContactId: z.string().trim().min(1).max(100).optional(),
+});
+
 export function createApp(deps: Deps) {
   const { config, limiter } = deps;
   const app = express();
@@ -392,6 +403,7 @@ export function createApp(deps: Deps) {
     }
     const rows: TeacherStudentRow[] = students.map((s) => ({
       ...publicStudent(s),
+      email: s.email,
       ghlContactId: s.ghlContactId,
       billingContactId: s.billingContactId,
       nextLesson: nextByContact[s.ghlContactId] ?? null,
@@ -405,6 +417,43 @@ export function createApp(deps: Deps) {
     return { students: rows };
   }));
 
+  teacher.get("/ghl/contacts", wrap(async (req) => {
+    const query = parse(z.string().trim().max(120).default(""), req.query.query);
+    const ghl = needGhl();
+    const { store } = needStore();
+    const [contacts, students] = await Promise.all([ghl.searchContacts(query), store.listStudents()]);
+    const linked = new Map(students.map((s) => [s.ghlContactId, s.fullName]));
+    return { contacts: contacts.map((c) => ({ ...c, studentName: linked.get(c.id) ?? null })) };
+  }));
+  teacher.post("/students", wrap(async (req) => {
+    const input = parse(studentSchema, req.body);
+    const isMinor = input.ageCategory === "child";
+    if (!isMinor && !input.email) throw new ApiError(400, "invalid_input", "Enter the student's email address.");
+    if (isMinor && !input.guardianName) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's name.");
+    if (isMinor && !input.guardianEmail) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's email address.");
+    const ghl = needGhl();
+    const { store } = needStore();
+    const billingContactId = input.billingContactId ?? input.ghlContactId;
+    // Bookings and the balance check rely on these, so both must be real contacts.
+    for (const id of new Set([input.ghlContactId, billingContactId])) {
+      await ghl.getContact(id).catch((e) => {
+        if (e instanceof ApiError && e.status === 404) throw new ApiError(400, "contact_not_found", "That GoHighLevel contact wasn't found.");
+        throw e;
+      });
+    }
+    const student = await store.createStudent({
+      fullName: input.fullName,
+      isMinor,
+      email: input.email || null,
+      guardianName: isMinor ? input.guardianName! : null,
+      guardianEmail: isMinor ? input.guardianEmail! : null,
+      ghlContactId: input.ghlContactId,
+      billingContactId,
+    });
+    if (!student) throw new ApiError(409, "contact_already_linked", "That GoHighLevel contact is already linked to a student.");
+    await audit(req, "student.create", student.id);
+    return { student: { id: student.id, fullName: student.fullName } };
+  }));
   teacher.get("/students/:id", wrap(async (req) => {
     const student = await loadStudent(req, parse(uuid, req.params.id));
     const { store } = needStore();

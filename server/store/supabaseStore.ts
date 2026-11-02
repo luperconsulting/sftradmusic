@@ -1,5 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
+import { ApiError } from "../http.js";
 import type { AccountRecord, AuthAdmin, InvitationRecord, PortalStore, StudentRecord } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
@@ -26,6 +27,7 @@ const toStudent = (r: any): StudentRecord => ({
   format: r.format,
   isMinor: r.is_minor,
   guardianName: r.guardian_name,
+  email: r.email ?? null,
   guardianEmail: r.guardian_email,
   studentSince: r.student_since,
   ghlContactId: r.ghl_contact_id,
@@ -105,6 +107,22 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     },
     async listStudents() {
       return (must(await db.from("students").select("*").order("full_name")) as any[]).map(toStudent);
+    },
+    async createStudent(input) {
+      const { data, error } = await db.from("students").insert({
+        first_name: input.fullName.split(/\s+/)[0],
+        full_name: input.fullName,
+        is_minor: input.isMinor,
+        email: input.email,
+        guardian_name: input.guardianName,
+        guardian_email: input.guardianEmail,
+        ghl_contact_id: input.ghlContactId,
+        billing_contact_id: input.billingContactId,
+      }).select("*").single();
+      if (error?.code === "23505") return null;
+      // The email column comes from migration 0002.
+      if (error?.code === "PGRST204" || error?.code === "42703") throw new ApiError(503, "migration_required", "Student records need a database update first (migration 0002).");
+      return toStudent(must({ data, error }));
     },
     async studentCounts() {
       const [notes, videos, assignments] = await Promise.all([

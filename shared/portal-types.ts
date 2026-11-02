@@ -152,7 +152,16 @@ export interface InvitationPreview {
   expiresAt: string;
 }
 
+export interface GhlContactOption {
+  id: string;
+  name: string;
+  email: string | null;
+  /** Set when this contact is already linked to a student. */
+  studentName: string | null;
+}
+
 export interface TeacherStudentRow extends StudentSummary {
+  email: string | null;
   nextLesson: string | null;
   noteCount: number;
   videoCount: number;

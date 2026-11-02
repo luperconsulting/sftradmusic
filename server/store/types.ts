@@ -20,6 +20,7 @@ export interface AccountRecord {
 }
 
 export interface StudentRecord extends StudentSummary {
+  email: string | null;
   ghlContactId: string;
   billingContactId: string;
 }
@@ -72,6 +73,8 @@ export interface PortalStore {
   getStudent(id: string): Promise<StudentRecord | null>;
   getStudents(ids: string[]): Promise<StudentRecord[]>;
   listStudents(): Promise<StudentRecord[]>;
+  /** Null when the GoHighLevel contact is already linked to another student. */
+  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
   studentCounts(): Promise<Record<string, { notes: number; videos: number; assignments: number }>>;
   studentAccounts(): Promise<Record<string, { accountId: string; status: "active" | "suspended" }>>;
 

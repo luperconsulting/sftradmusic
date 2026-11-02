@@ -9,7 +9,7 @@ export const FUTURE = new Date(Date.now() + 7 * 864e5).toISOString().replace(/\.
 
 export const studentRecord = (id: string, contact: string, payer: string): StudentRecord => ({
   id, firstName: "Test", fullName: "Test Student", styleLine: "", format: "In person", isMinor: true,
-  guardianName: "G", guardianEmail: "g@example.com", studentSince: null, ghlContactId: contact, billingContactId: payer,
+  guardianName: "G", guardianEmail: "g@example.com", email: null, studentSince: null, ghlContactId: contact, billingContactId: payer,
 });
 
 export const rawInvoice = (over: Record<string, unknown> = {}) => ({
@@ -29,6 +29,8 @@ export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
     listInvoices: async () => ({ invoices: [], total: 0 }),
     getInvoice: async () => rawInvoice(),
     sendInvoice: async () => ({}),
+    searchContacts: async () => [],
+    getContact: async (id) => ({ id, name: "Contact", email: null }),
     ...over,
   };
 }

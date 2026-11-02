@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
-import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
+import type { AssignedVideoDTO, BillingDTO, GhlContactOption, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
 import { api, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { supabase } from "../auth/supabase";
@@ -68,6 +68,9 @@ export function useTeacherVM(screen: string): VM {
   const [invEmail, setInvEmail] = useState("");
   const [invName, setInvName] = useState("");
   const [invStudentId, setInvStudentId] = useState("");
+  const [contactResults, setContactResults] = useState<GhlContactOption[] | null>(null);
+  const [contactSearching, setContactSearching] = useState(false);
+  const [contactError, setContactError] = useState("");
   const [migrateBill, setMigrateBill] = useState("student");
   const contentRef = useRef<HTMLDivElement>(null);
   const file = useRef<File | null>(null);
@@ -230,7 +233,66 @@ export function useTeacherVM(screen: string): VM {
     people: a.students.map((p) => ({ name: p.name, dot: p.completedAt ? "#4A6149" : "#C27D38" })),
   }));
 
+  // ---- adding students
+  const searchContacts = useCallback(async (query: string) => {
+    setContactSearching(true);
+    setContactError("");
+    try {
+      setContactResults((await api(`/teacher/ghl/contacts?query=${encodeURIComponent(query)}`)).contacts);
+    } catch (e) {
+      setContactResults(null);
+      setContactError(errorText(e));
+    } finally {
+      setContactSearching(false);
+    }
+  }, []);
+  const openAddStudent = (mode: "add" | "import") => {
+    open("addStudent", { mode, form: { ageCategory: "child" } });
+    setContactResults(null);
+    void searchContacts("");
+  };
+  const patchForm = (patch: any) => setForm((f: any) => ({ ...f, ...patch }));
+  const pickContact = (c: GhlContactOption) => {
+    if (form.pickingBilling) return patchForm({ billing: c, pickingBilling: false, query: "" });
+    const isFirst = !form.contact;
+    patchForm({
+      error: "", contact: c, billing: form.billing && form.billing.id !== form.contact?.id ? form.billing : c, pickingContact: false, query: "",
+      ...(isFirst && dialog?.data.mode === "import" ? { fullName: c.name, email: c.email ?? "" } : {}),
+    });
+  };
+  const saveStudent = async () => {
+    if (form.saving) return;
+    if (!form.contact) return patchForm({ error: "Choose the student's GoHighLevel contact." });
+    patchForm({ saving: true, error: "" });
+    try {
+      const { student } = await api("/teacher/students", { method: "POST", body: {
+        fullName: form.fullName, ageCategory: form.ageCategory, email: form.email, guardianName: form.guardianName, guardianEmail: form.guardianEmail,
+        ghlContactId: form.contact.id, billingContactId: form.billing.id,
+      } });
+      setStudents((await api("/teacher/students")).students);
+      patchForm({ saving: false, created: student });
+    } catch (e) {
+      patchForm({ saving: false, error: errorText(e) });
+    }
+  };
+
   // ---- invitations
+  // Choosing a student loads what's on their record, so the details aren't typed twice.
+  const chooseInvStudent = useCallback((id: string, rows: TeacherStudentRow[]) => {
+    setInvStudentId(id);
+    const s = rows.find((r) => r.id === id);
+    if (!s) return;
+    setInvRole(s.isMinor ? "Parent / guardian" : "Adult student");
+    setInvEmail((s.isMinor ? s.guardianEmail : s.email) ?? "");
+    setInvName(s.isMinor ? s.guardianName ?? "" : "");
+  }, []);
+  const appliedInviteStudent = useRef("");
+  useEffect(() => {
+    if (screen !== "invitations" || !stateStudent || appliedInviteStudent.current === stateStudent) return;
+    if (!students.some((s) => s.id === stateStudent)) return;
+    appliedInviteStudent.current = stateStudent;
+    chooseInvStudent(stateStudent, students);
+  }, [screen, stateStudent, students, chooseInvStudent]);
   const refreshInvites = async () => setInvites((await api("/teacher/invitations")).invitations);
   const inviteRows = invites.map((i) => {
     const code = i.method === "code" ? issued[i.id] : undefined;
@@ -310,10 +372,10 @@ export function useTeacherVM(screen: string): VM {
 
   // ---- dialogs
   const dk = dialog?.kind ?? "", dd = dialog?.data ?? {};
-  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
-  const dlgKickers: any = { migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
+  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: dialog?.data.mode === "import" ? "Import from GoHighLevel" : "Add a student", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
+  const dlgKickers: any = { addStudent: "Students", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
   const dlg: any = { open: !!dialog, width: "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
+  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
   const hasUnpaid = openInv.length > 0;
   const connected = (b?: boolean) => (b ? "Connected" : "Not connected");
   const integrations = settings?.integrations;
@@ -339,6 +401,25 @@ export function useTeacherVM(screen: string): VM {
     ],
     invFilters: ["All", "Open", "Overdue", "Paid", "Draft"].map((f) => ({ label: f, pick: () => setInvFilter(f), bg: invFilter === f ? "#1D2A44" : "transparent", color: invFilter === f ? "#fff" : "rgba(17,22,27,.7)", border: invFilter === f ? "#1D2A44" : "rgba(17,22,27,.15)" })),
     invQ, setInvQ: (e: any) => setInvQ(e.target.value), ghlInvoices,
+    openAddStudent: () => openAddStudent("add"), openImportStudent: () => openAddStudent("import"),
+    noStudentsTitle: query ? `No students match “${query}”` : "No students yet", noStudentsHint: query ? "Try a different spelling, or invite a new family." : "Add a student, or import one from GoHighLevel, to get started.", hasQuery: !!query,
+    sf: {
+      form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value }), created: form.created, saving: !!form.saving, error: form.error,
+      contact: form.contact, billing: form.billing, pickingBilling: !!form.pickingBilling,
+      showContactPicker: !form.contact || !!form.pickingContact || !!form.pickingBilling,
+      showFields: (dialog?.data.mode !== "import" || !!form.contact) && !form.pickingBilling && !form.pickingContact,
+      changeContact: () => patchForm({ pickingContact: true }), changeBilling: () => patchForm({ pickingBilling: true }),
+      query: form.query ?? "", setQuery: (e: any) => patchForm({ query: e.target.value }), search: () => searchContacts(form.query ?? ""),
+      queryKey: (e: any) => { if (e.key === "Enter") void searchContacts(form.query ?? ""); },
+      searching: contactSearching, searchError: contactError, noResults: !contactSearching && contactResults?.length === 0,
+      results: (contactResults ?? []).map((c) => {
+        const taken = !!c.studentName && !form.pickingBilling;
+        return { id: c.id, name: c.name, meta: taken ? `Already linked to ${c.studentName}` : c.email ?? "No email on file", disabled: taken, pick: () => pickContact(c) };
+      }),
+      ages: [["child", "Child"], ["adult", "Adult"]].map(([id, label]) => ({ id, label, on: form.ageCategory === id, pick: () => patchForm({ ageCategory: id }) })),
+      isChild: form.ageCategory === "child", save: saveStudent,
+      inviteCreated: () => { const id = form.created.id; close(); navigate("/teacher/invitations", { state: { studentId: id } }); },
+    },
     query, setQuery: (e: any) => setQuery(e.target.value), clearQuery: () => setQuery(""), filteredStudents, hasStudents: filteredStudents.length > 0, noStudents: filteredStudents.length === 0, studentCount: `${filteredStudents.length} of ${students.length} students`,
     prof, profileNotes,
     rowanVideos: (profile?.videos ?? []).map((x) => ({ title: x.title, cat: x.category, assigned: fmt(x.assignedAt, { month: "short", day: "numeric" }), wLabel: x.watchedAt ? "Watched" : "Not watched", wColor: x.watchedAt ? "#4A6149" : "#9C5F22" })),
@@ -434,7 +515,7 @@ export function useTeacherVM(screen: string): VM {
     invSendLabel: invMethod === "code" ? "Generate code" : "Create invitation link", invSendIcon: invMethod === "code" ? "ph ph-key" : "ph ph-paper-plane-tilt",
     roleOpts: [["Parent / guardian", "A child", "ph ph-baby"], ["Adult student", "An adult", "ph ph-user"]].map(([r, label, icon]) => ({ label, icon, on: invRole === r, pick: () => setInvRole(r), bg: invRole === r ? "#1D2A44" : "transparent", color: invRole === r ? "#fff" : "rgba(17,22,27,.7)" })),
     isChild: !isAdult, isAdult, roleHint: isAdult ? "The student owns the account: they sign in, see their notes and pay their own invoices." : "The parent owns the account: they sign in, see notes and pay invoices. Siblings can share one login.",
-    invEmail, setInvEmail: (e: any) => setInvEmail(e.target.value), invName, setInvName: (e: any) => setInvName(e.target.value), invStudentId, setInvStudent: (e: any) => setInvStudentId(e.target.value),
+    invEmail, setInvEmail: (e: any) => setInvEmail(e.target.value), invName, setInvName: (e: any) => setInvName(e.target.value), invStudentId, setInvStudent: (e: any) => chooseInvStudent(e.target.value, students),
     sendInvite: guard(async () => {
       if (!invStudentId) return flash("Choose a student first.");
       const email = invEmail.trim();
