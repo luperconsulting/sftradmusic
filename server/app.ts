@@ -11,6 +11,7 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
+import { isEmailOtp } from "../shared/email-otp.js";
 import { assertPortalInviteEmail, hashCredential, INVITE_CODE_TTL_MS, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInvitePage } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
@@ -250,7 +251,7 @@ export function createApp(deps: Deps) {
   app.post("/api/invitations/verify-code", wrap(async (req) => {
     const body = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), code: z.string().trim() }), req.body);
     limiter.hit(`invite-code:${clientKey(req)}:${body.email}`, 8, 15 * 60000);
-    if (!/^\d{6}$/.test(body.code)) throw new ApiError(400, "invalid_code", "Enter the 6-digit code from the email.");
+    if (!isEmailOtp(body.code)) throw new ApiError(400, "invalid_code", "Enter the code from the email.");
     const { store, auth } = needStore();
     const invite = await store.findPendingInvitationByEmail(body.email);
     if (!invite) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");

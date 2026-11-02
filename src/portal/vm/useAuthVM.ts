@@ -1,9 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import type { InvitationPreview } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { homeFor, useAuth } from "../auth/AuthContext";
-import { supabase } from "../auth/supabase";
+import { markMfaVerified, markPasswordVerified } from "../auth/teacherGate";
+import { isEmailOtp } from "../../../shared/email-otp";
+import { DEMO_MODE, supabase } from "../auth/supabase";
 import { fmt, useToast } from "./common";
 import type { VM } from "./types";
 
@@ -28,16 +30,16 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
   const [code, setCode] = useState("");
   const [preview, setPreview] = useState<InvitationPreview | null>(null);
 
-  useEffect(() => {
-    if (screen !== "invite" || !supabase) return;
-    // A confirmed code already signed them in. A refresh should continue at the password step.
-    supabase.auth.getSession().then(({ data }) => {
-      if (data.session) setStep("details");
-    });
-  }, [screen]);
-
   const signIn = useCallback(async () => {
     if (busy) return;
+    if (DEMO_MODE && !supabase) {
+      markPasswordVerified();
+      markMfaVerified();
+      setBusy(true);
+      await refresh();
+      setBusy(false);
+      return;
+    }
     if (!supabase) return setError(NOT_CONFIGURED);
     setError("");
     setBusy(true);
@@ -48,6 +50,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       // One generic message: never reveal whether an email has an account.
       return setError("That email and password don't match our records. Please check and try again.");
     }
+    markPasswordVerified();
     await refresh();
     setBusy(false);
   }, [busy, email, password, refresh]);
@@ -83,6 +86,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       refs.current[0]?.focus();
       return setError("That code isn't valid or has expired. Codes refresh every 30 seconds.");
     }
+    markMfaVerified();
     await refresh();
     setBusy(false);
   }, [busy, refresh]);
@@ -91,7 +95,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     const address = email.trim().toLowerCase();
     const otp = code.replace(/\D/g, "");
     if (!address.includes("@")) return setError("Enter the email the code was sent to.");
-    if (otp.length !== 6) return setError("Enter the 6-digit code from the email.");
+    if (!isEmailOtp(otp)) return setError("Enter the code from the email.");
     if (busy) return;
     setBusy(true);
     setError("");
@@ -199,7 +203,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     expires: preview ? fmt(preview.expiresAt, { month: "long", day: "numeric", year: "numeric" }) : "",
     create: () => redeem(code),
     otp: code,
-    setOtp: (e: any) => setCode(String(e.target.value ?? "").replace(/\D/g, "").slice(0, 6)),
+    setOtp: (e: any) => setCode(String(e.target.value ?? "").replace(/\D/g, "").slice(0, 10)),
     submitOtp: () => void submitInviteCode(),
     savePassword: () => void finishInvitePassword(),
     verify: () => undefined,
@@ -222,6 +226,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       home: () => { window.location.href = "/"; },
       signup: () => navigate("/signup"),
       signin: () => void signOut().then(() => navigate("/signin")),
+      invite: () => navigate("/invite"),
       student: () => navigate(homeFor(me)),
     },
     deniedBackLabel: "Back to my dashboard",

@@ -395,7 +395,7 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
       return setLoginPassword(admin, id, password);
     },
     async sendPortalInvite(email, redirectTo) {
-      // Supabase emails the 6-digit code from the Magic Link template. A new send replaces the previous code.
+      // The Magic Link template's {{ .Token }} is this code. verifyEmailOtp checks it with type "email".
       const { error } = await admin.auth.signInWithOtp({
         email,
         options: { shouldCreateUser: true, emailRedirectTo: redirectTo },
