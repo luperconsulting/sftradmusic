@@ -127,6 +127,7 @@ export function toInvoiceDTO(raw: any): InvoiceDTO {
     number: String(raw.invoiceNumber ?? ""),
     title: raw.title ?? raw.name ?? "Invoice",
     status: raw.status as InvoiceStatus,
+    liveMode: raw.liveMode,
     issueDate: raw.issueDate ?? "",
     dueDate: raw.dueDate ?? "",
     total: Number(raw.total ?? 0),

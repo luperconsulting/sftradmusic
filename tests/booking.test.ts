@@ -36,6 +36,13 @@ describe("booking restriction", () => {
     expect((await book(createApp(buildDeps({ parent }, ghl)))).status).toBe(402);
   });
 
+  it("ignores unpaid test-mode invoices but not live ones", async () => {
+    const test = fakeGhl({ listInvoices: async () => ({ invoices: [rawInvoice({ liveMode: false })], total: 1 }) });
+    expect((await book(createApp(buildDeps({ parent }, test)))).status).toBe(200);
+    const live = fakeGhl({ listInvoices: async () => ({ invoices: [rawInvoice({ liveMode: true })], total: 1 }) });
+    expect((await book(createApp(buildDeps({ parent }, live)))).status).toBe(402);
+  });
+
   it("fails closed when the balance can't be read", async () => {
     const createAppointment = vi.fn();
     const ghl = fakeGhl({ createAppointment, listInvoices: async () => { throw new Error("down"); } });

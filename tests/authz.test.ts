@@ -1,6 +1,6 @@
 import { generateKeyPairSync, createSign } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
 import { loadConfig } from "../server/config";
@@ -294,5 +294,36 @@ describe("Vercel routing", () => {
       const headers = vercel.headers.find((h: any) => h.source === s)?.headers.map((x: any) => x.key);
       expect(headers).toEqual(expect.arrayContaining(["X-Robots-Tag", "Cache-Control"]));
     }
+  });
+});
+
+describe("Preview-only invoice check", () => {
+  const path = "/api/internal/ghl-invoice-check";
+  afterEach(() => { delete process.env.VERCEL_ENV; delete process.env.GHL_PRIVATE_INTEGRATION_TOKEN; delete process.env.GHL_LOCATION_ID; });
+
+  it.each([undefined, "production", "development"])("doesn't exist when VERCEL_ENV is %s", async (env) => {
+    if (env) process.env.VERCEL_ENV = env;
+    expect((await get(createApp(buildDeps({})), path)).status).toBe(404);
+  });
+
+  it("reports only which values are present on Preview", async () => {
+    process.env.VERCEL_ENV = "preview";
+    const res = await get(createApp(buildDeps({})), path);
+    expect(res.body.configured).toBe(false);
+    expect(res.body.present.GHL_PRIVATE_INTEGRATION_TOKEN).toBe(false);
+  });
+
+  it("sends GET requests only and returns no customer details or token", async () => {
+    process.env.VERCEL_ENV = "preview";
+    process.env.GHL_PRIVATE_INTEGRATION_TOKEN = "secret-token-value";
+    process.env.GHL_LOCATION_ID = "loc";
+    const invoice = { _id: "inv1", status: "sent", liveMode: true, currency: "USD", total: 100, amountDue: 100, amountPaid: 0, invoiceItems: [{ amount: 100, qty: 1 }], contactDetails: { id: "contact1", name: "Private Name", email: "private@example.com", phoneNo: "+14155550000" } };
+    const fetchMock = vi.fn(async (url: string) => new Response(JSON.stringify(url.includes("/invoices/inv1") ? invoice : { invoices: [invoice], total: 1 }), { status: 200 }));
+    vi.stubGlobal("fetch", fetchMock);
+    const res = await get(createApp(buildDeps({})), `${path}?invoiceId=inv1234567890`);
+    vi.unstubAllGlobals();
+    expect(res.status).toBe(200);
+    expect(fetchMock.mock.calls.every(([, init]: any) => (init?.method ?? "GET") === "GET")).toBe(true);
+    expect(JSON.stringify(res.body)).not.toMatch(/secret-token-value|Private Name|private@example|4155550000|contact1/);
   });
 });

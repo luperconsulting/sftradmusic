@@ -6,7 +6,8 @@ import { toInvoiceDTO, type GhlClient } from "../integrations/ghl.js";
 // unfamiliar status from GoHighLevel blocks booking rather than letting it through.
 const CLOSED = new Set(["draft", "void", "paid"]);
 
-export const isOutstanding = (inv: InvoiceDTO) => !CLOSED.has(inv.status) && inv.amountDue > 0;
+// Test-mode invoices aren't real debts, so they must not block a family from booking.
+export const isOutstanding = (inv: InvoiceDTO) => inv.liveMode !== false && !CLOSED.has(inv.status) && inv.amountDue > 0;
 
 export async function listAllInvoices(ghl: GhlClient, contactId: string): Promise<InvoiceDTO[]> {
   const out: InvoiceDTO[] = [];
@@ -22,7 +23,7 @@ export async function listAllInvoices(ghl: GhlClient, contactId: string): Promis
 
 export async function getBilling(ghl: GhlClient, payerContactId: string): Promise<BillingDTO> {
   const all = await listAllInvoices(ghl, payerContactId);
-  const visible = all.filter((i) => i.status !== "draft");
+  const visible = all.filter((i) => i.status !== "draft" && i.liveMode !== false);
   const openInvoices = visible.filter(isOutstanding);
   return {
     outstanding: openInvoices.reduce((sum, i) => sum + i.amountDue, 0),

@@ -86,6 +86,7 @@ export interface InvoiceDTO {
   number: string;
   title: string;
   status: InvoiceStatus;
+  liveMode?: boolean;
   issueDate: string;
   dueDate: string;
   total: number;
