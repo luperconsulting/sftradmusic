@@ -173,9 +173,11 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     if (!target || paying) return;
     setPaying(true); // blocks a second request while the first is in flight
     try {
-      await api(`/invoices/${target.id}/send-payment-link`, { method: "POST" });
+      const sent = await api<{ suppressed?: boolean }>(`/invoices/${target.id}/send-payment-link`, { method: "POST" });
       close();
-      flash("Your payment link is on its way to your email. Your balance updates here once the payment clears.");
+      flash(sent?.suppressed
+        ? "Safe mode is on, so no email or text was sent. The payment link was only written to the server log."
+        : "Your payment link is on its way to your email. Your balance updates here once the payment clears.");
     } catch (err) {
       flash(errorText(err));
     } finally {

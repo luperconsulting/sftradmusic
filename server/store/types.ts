@@ -7,6 +7,7 @@ import type {
   StudentSummary,
   VideoDTO,
 } from "../../shared/portal-types.js";
+import type { StudentFormat } from "../../shared/student-form.js";
 import type { StudentLink } from "../auth/policy.js";
 
 export interface AccountRecord {
@@ -76,7 +77,7 @@ export interface PortalStore {
   /** Throws if the database can't hold a new student yet, before any outside system is touched. */
   checkStudentSchema(): Promise<void>;
   /** Null when the GoHighLevel contact is already linked to another student. */
-  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
+  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; format: StudentFormat; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
   studentCounts(): Promise<Record<string, { notes: number; videos: number; assignments: number }>>;
   studentAccounts(): Promise<Record<string, { accountId: string; status: "active" | "suspended" }>>;
 

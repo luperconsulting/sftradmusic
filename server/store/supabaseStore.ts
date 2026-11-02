@@ -124,6 +124,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         email: input.email,
         guardian_name: input.guardianName,
         guardian_email: input.guardianEmail,
+        format: input.format,
         ghl_contact_id: input.ghlContactId,
         billing_contact_id: input.billingContactId,
       }).select("*").single();

@@ -14,6 +14,12 @@ export interface GhlConfig {
   timezone: string;
   /** The GoHighLevel user invoices are sent as. Without one, the portal can't send payment links. */
   invoiceSenderUserId: string | null;
+  /**
+   * Non-production default. New contacts are do-not-disturb and tagged, bookings do not notify,
+   * and invoice send is logged instead of delivered. Unset means off, so a caller that forgets the flag
+   * does not silently change live behavior; loadConfig sets it from GHL_SAFE_MODE.
+   */
+  safeMode?: boolean;
 }
 
 export interface GhlAppointment {
@@ -43,7 +49,12 @@ export interface GhlClient {
   findContactByEmail(email: string): Promise<GhlContact | null>;
   /** Creates a contact. `created` is false when GoHighLevel matched an existing one instead. */
   createContact(input: { name: string; email: string | null }): Promise<{ contact: GhlContact; created: boolean }>;
-  /** Sends an existing invoice to the contact it's addressed to. This delivers real messages. */
+  /** Deletes a contact this portal just created. Never call this for a contact the request only reused. */
+  deleteContact(contactId: string): Promise<void>;
+  /**
+   * Sends an existing invoice by email to the contact it's addressed to.
+   * SMS is never requested. In safe mode this only logs and returns `{ suppressed: true }`.
+   */
   sendInvoice(invoiceId: string, input: { userId: string; liveMode: boolean }): Promise<unknown>;
 }
 
@@ -55,7 +66,10 @@ const toContact = (c: any): GhlContact => ({
   email: c.email ?? null,
 });
 
+const PORTAL_TEST_TAG = "portal-test";
+
 export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fetch): GhlClient {
+  const safeMode = config.safeMode === true;
   async function call(path: string, version: string, init: RequestInit = {}) {
     let res: Response;
     try {
@@ -84,7 +98,10 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
       if (res.status === 400 || res.status === 422) throw new ApiError(409, "ghl_rejected", "That request couldn't be completed. Please choose another time or try again.");
       throw new ApiError(503, "ghl_unavailable", "We couldn't reach the scheduling and billing system. Please try again shortly.");
     }
-    return res.json() as Promise<any>;
+    if (res.status === 204) return {};
+    const text = await res.text();
+    if (!text) return {};
+    return JSON.parse(text) as any;
   }
   const invoiceQuery = (extra: Record<string, string>) =>
     new URLSearchParams({ altId: config.locationId, altType: "location", ...extra }).toString();
@@ -113,13 +130,13 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
           address: input.address,
           appointmentStatus: "confirmed",
           ignoreFreeSlotValidation: false,
-          toNotify: true,
+          toNotify: !safeMode,
         }),
       }),
     updateAppointment: (eventId, input) =>
       call(`/calendars/events/appointments/${encodeURIComponent(eventId)}`, CALENDAR_VERSION, {
         method: "PUT",
-        body: JSON.stringify({ ...input, ignoreFreeSlotValidation: false, toNotify: true }),
+        body: JSON.stringify({ ...input, ignoreFreeSlotValidation: false, toNotify: !safeMode }),
       }),
     async getAppointment(eventId) {
       const data = await call(`/calendars/events/appointments/${encodeURIComponent(eventId)}`, CALENDAR_VERSION);
@@ -159,18 +176,37 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
       const [firstName, ...rest] = name.trim().split(/\s+/);
       const data = await call("/contacts/", CRM_VERSION, {
         method: "POST",
-        body: JSON.stringify({ locationId: config.locationId, firstName, lastName: rest.join(" ") || undefined, name, ...(email ? { email } : {}), source: "SF Trad Music portal" }),
+        body: JSON.stringify({
+          locationId: config.locationId,
+          firstName,
+          lastName: rest.join(" ") || undefined,
+          name,
+          ...(email ? { email } : {}),
+          source: "SF Trad Music portal",
+          // Safe mode keeps a Preview contact from entering live workflows or receiving messages.
+          ...(safeMode ? { dnd: true, tags: [PORTAL_TEST_TAG] } : {}),
+        }),
       });
       if (data.duplicateId) return { contact: { id: data.duplicateId, name, email }, created: false };
       if (!data.contact?.id) throw new ApiError(503, "ghl_unavailable", "We couldn't reach the scheduling and billing system. Please try again shortly.");
       return { contact: toContact(data.contact), created: true };
     },
+    async deleteContact(contactId) {
+      await call(`/contacts/${encodeURIComponent(contactId)}`, CRM_VERSION, { method: "DELETE" });
+    },
     getInvoice: (invoiceId) => call(`/invoices/${encodeURIComponent(invoiceId)}?${invoiceQuery({})}`, CRM_VERSION),
-    sendInvoice: (invoiceId, input) =>
-      call(`/invoices/${encodeURIComponent(invoiceId)}/send`, CRM_VERSION, {
+    async sendInvoice(invoiceId, input) {
+      // action is fixed to email. sms and sms_and_email are never sent, in safe mode or otherwise.
+      const action = "email";
+      if (safeMode) {
+        console.info(`[ghl] safe mode: would email invoice ${invoiceId} (liveMode=${String(input.liveMode)}). No email or SMS was sent.`);
+        return { suppressed: true };
+      }
+      return call(`/invoices/${encodeURIComponent(invoiceId)}/send`, CRM_VERSION, {
         method: "POST",
-        body: JSON.stringify({ altId: config.locationId, altType: "location", userId: input.userId, action: "email", liveMode: input.liveMode }),
-      }),
+        body: JSON.stringify({ altId: config.locationId, altType: "location", userId: input.userId, action, liveMode: input.liveMode }),
+      });
+    },
   };
 }
 

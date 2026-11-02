@@ -55,8 +55,15 @@ export async function sendInvoicePaymentLink(
   }
   const last = await lastSentAt(invoice.id);
   if (last && Date.now() - new Date(last).getTime() < LINK_COOLDOWN_MS) {
-    throw new ApiError(429, "link_recently_sent", "We just sent your payment link. Please check your email and texts.");
+    throw new ApiError(429, "link_recently_sent", ghl.config.safeMode
+      ? "That was just recorded. Please wait a few minutes before trying again."
+      : "We just sent your payment link. Please check your email.");
+  }
+  // Safe mode never reaches GoHighLevel. The client refuses too, in case another caller forgets.
+  if (ghl.config.safeMode) {
+    console.info(`[ghl] safe mode: would email invoice ${invoice.id} (liveMode=${invoice.liveMode !== false}). No email or SMS was sent.`);
+    return { sent: false, suppressed: true, invoiceId: invoice.id, amountDue: invoice.amountDue };
   }
   await ghl.sendInvoice(invoice.id, { userId: senderId, liveMode: invoice.liveMode !== false });
-  return { sent: true, invoiceId: invoice.id, amountDue: invoice.amountDue };
+  return { sent: true, suppressed: false, invoiceId: invoice.id, amountDue: invoice.amountDue };
 }

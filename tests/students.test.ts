@@ -1,8 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
+import { studentFormMessages } from "../shared/student-form";
 import { createApp } from "../server/app";
 import { createGhlClient } from "../server/integrations/ghl";
 import { buildDeps, fakeGhl } from "./helpers";
+
+/** Existing studio contact. Tests reuse this id and must not call GoHighLevel. */
+const ARZO = { fullName: "Arzo Luper", email: "luperdev@gmail.com", ghlContactId: "RQgd4luPVk9r2srPBlHr" };
 
 const users = { teach: { role: "teacher" as const }, parent: { role: "guardian" as const, links: [] } };
 const child = { fullName: "Rowan Sample", ageCategory: "child", guardianName: "Pat Sample", guardianEmail: "PAT@example.com", ghlContactId: "c1", billingContactId: "c2" };
@@ -11,7 +15,7 @@ function setup(ghl = fakeGhl()) {
   const rows: any[] = [];
   const createStudent = vi.fn(async (i: any) => {
     if (rows.some((r) => r.ghlContactId === i.ghlContactId)) return null;
-    const row = { ...i, id: `33333333-3333-4333-8333-33333333333${rows.length}`, firstName: i.fullName.split(" ")[0], styleLine: "", format: "In person", studentSince: null };
+    const row = { ...i, id: `33333333-3333-4333-8333-33333333333${rows.length}`, firstName: i.fullName.split(" ")[0], styleLine: "", format: i.format ?? "In person", studentSince: null };
     rows.push(row);
     return row;
   });
@@ -128,12 +132,15 @@ describe("enrolling without an existing contact", () => {
   });
 
   it("records contacts left behind if saving the student fails", async () => {
+    const deleteContact = vi.fn(async () => undefined);
     const audit = vi.fn(async () => undefined);
-    const app = createApp(buildDeps(users, fakeGhl({ createContact: async () => ({ contact: contact("orphan"), created: true }) }), {
+    const app = createApp(buildDeps(users, fakeGhl({ deleteContact, createContact: async () => ({ contact: contact("orphan"), created: true }) }), {
       audit, listStudents: async () => [], createStudent: async () => { throw new Error("db"); },
     } as any));
     const res = await request(app).post("/api/teacher/students").set("Authorization", "Bearer teach").send(newAdult);
     expect(res.status).toBe(500);
+    expect(deleteContact).toHaveBeenCalledTimes(1);
+    expect(deleteContact).toHaveBeenCalledWith("orphan");
     expect(audit).toHaveBeenCalledWith("teach", "student.create_failed", "", { createdContactIds: ["orphan"] });
   });
 });
@@ -197,6 +204,85 @@ describe("adding students", () => {
     const { post, get } = setup();
     expect((await post("/api/teacher/students", child, "parent")).status).toBe(403);
     expect((await get("/api/teacher/ghl/contacts", "parent")).status).toBe(403);
+  });
+
+  it("reuses Arzo Luper's contact, stores the format, and does not create another", async () => {
+    const createContact = vi.fn();
+    const deleteContact = vi.fn();
+    const findContactByEmail = vi.fn(async (email: string) => (email === ARZO.email ? { id: ARZO.ghlContactId, name: ARZO.fullName, email } : null));
+    const { post, createStudent } = setup(fakeGhl({ createContact, deleteContact, findContactByEmail }));
+    const res = await post("/api/teacher/students", { fullName: ARZO.fullName, ageCategory: "adult", email: "LuperDev@gmail.com", format: "Zoom" });
+    expect(res.status).toBe(200);
+    expect(res.body.contacts).toEqual({ student: "reused", billing: "same" });
+    expect(findContactByEmail).toHaveBeenCalledWith(ARZO.email);
+    expect(createContact).not.toHaveBeenCalled();
+    expect(deleteContact).not.toHaveBeenCalled();
+    expect(createStudent.mock.calls[0][0]).toMatchObject({ fullName: ARZO.fullName, email: ARZO.email, format: "Zoom", ghlContactId: ARZO.ghlContactId, billingContactId: ARZO.ghlContactId, isMinor: false });
+  });
+
+  it("returns a clear error when that email is already enrolled", async () => {
+    const createContact = vi.fn(async () => ({ contact: contact("new"), created: true }));
+    const { post } = setup(fakeGhl({ createContact, findContactByEmail: async () => ({ id: ARZO.ghlContactId, name: ARZO.fullName, email: ARZO.email }) }));
+    expect((await post("/api/teacher/students", { fullName: ARZO.fullName, ageCategory: "adult", email: ARZO.email })).status).toBe(200);
+    const again = await post("/api/teacher/students", { fullName: "Someone Else", ageCategory: "adult", email: "LuperDev@gmail.com", format: "In person" });
+    expect(again.status).toBe(409);
+    expect(again.body.error).toEqual({ code: "student_already_exists", message: studentFormMessages.duplicateEmail });
+    expect(createContact).not.toHaveBeenCalled();
+  });
+
+  it("deletes only the contact this request created when the student row fails", async () => {
+    const deleteContact = vi.fn(async () => undefined);
+    const audit = vi.fn(async () => undefined);
+    const app = createApp(buildDeps(users, fakeGhl({
+      deleteContact,
+      findContactByEmail: async (email) => (email === ARZO.email ? { id: ARZO.ghlContactId, name: ARZO.fullName, email } : null),
+      createContact: async (i) => ({ contact: contact("new-minor", i.email), created: true }),
+    }), { audit, listStudents: async () => [], createStudent: async () => { throw new Error("db"); } } as any));
+    const res = await request(app).post("/api/teacher/students").set("Authorization", "Bearer teach").send({
+      fullName: "Minor Example", ageCategory: "child", guardianName: ARZO.fullName, guardianEmail: ARZO.email, format: "In person",
+    });
+    expect(res.status).toBe(500);
+    expect(deleteContact).toHaveBeenCalledTimes(1);
+    expect(deleteContact).toHaveBeenCalledWith("new-minor");
+    expect(deleteContact).not.toHaveBeenCalledWith(ARZO.ghlContactId);
+    expect(audit).toHaveBeenCalledWith("teach", "student.create_failed", "", { createdContactIds: ["new-minor"] });
+  });
+
+  it("still records the new contact if removing it fails", async () => {
+    const audit = vi.fn(async () => undefined);
+    const app = createApp(buildDeps(users, fakeGhl({
+      deleteContact: async () => { throw new Error("ghl down"); },
+      createContact: async () => ({ contact: contact("orphan"), created: true }),
+    }), { audit, listStudents: async () => [], createStudent: async () => { throw new Error("db"); } } as any));
+    const res = await request(app).post("/api/teacher/students").set("Authorization", "Bearer teach").send(newAdult);
+    expect(res.status).toBe(500);
+    expect(audit).toHaveBeenCalledWith("teach", "student.create_failed", "", { createdContactIds: ["orphan"] });
+  });
+
+  it("names the invalid field instead of a generic error", async () => {
+    const { post, createStudent } = setup();
+    const res = await post("/api/teacher/students", { fullName: "Ada Sample", ageCategory: "adult", email: "not-an-email", format: "Zoom" });
+    expect(res.status).toBe(400);
+    expect(res.body.error.message).toBe(studentFormMessages.emailInvalid);
+    const format = await post("/api/teacher/students", { ...newAdult, format: "Remote" });
+    expect(format.body.error.message).toBe(studentFormMessages.format);
+    const guardian = await post("/api/teacher/students", { ...newChild, guardianEmail: "parent-at-example" });
+    expect(guardian.body.error.message).toBe(studentFormMessages.guardianEmailInvalid);
+    expect(createStudent).not.toHaveBeenCalled();
+  });
+
+  it("requires a teacher with two-factor, and refuses a suspended teacher", async () => {
+    const body = { fullName: ARZO.fullName, ageCategory: "adult", email: ARZO.email, ghlContactId: ARZO.ghlContactId };
+    const send = (who: Record<string, unknown>, token?: string) => {
+      const req = request(createApp(buildDeps(token ? { u: who as any } : {}))).post("/api/teacher/students").send(body);
+      return token ? req.set("Authorization", `Bearer ${token}`) : req;
+    };
+    expect((await send({})).status).toBe(401);
+    expect((await send({ role: "guardian", links: [] }, "u")).status).toBe(403);
+    expect((await send({ role: "student", links: [] }, "u")).status).toBe(403);
+    expect((await send({ role: "teacher", aal: "aal1" }, "u")).body.error.code).toBe("mfa_required");
+    expect((await send({ role: "teacher", mfa: false, aal: "aal2" }, "u")).body.error.code).toBe("mfa_required");
+    expect((await send({ role: "teacher", status: "suspended" }, "u")).body.error.code).toBe("account_suspended");
   });
 
   it("searches contacts in this location with GoHighLevel's documented call", async () => {

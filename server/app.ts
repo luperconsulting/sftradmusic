@@ -1,4 +1,5 @@
-import { resolveStudentContacts } from "./services/students.js";
+import { parseNewStudent, resolveStudentContacts } from "./services/students.js";
+import { studentFormMessages } from "../shared/student-form.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -71,18 +72,6 @@ const inviteSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(200),
   name: z.string().trim().min(1).max(120),
   studentIds: z.array(uuid).min(1).max(10),
-});
-
-const optionalEmail = z.string().trim().toLowerCase().email().max(200).or(z.literal("")).optional();
-const studentSchema = z.object({
-  fullName: z.string().trim().min(1).max(120),
-  ageCategory: z.enum(["child", "adult"]),
-  email: optionalEmail,
-  guardianName: z.string().trim().max(120).optional(),
-  guardianEmail: optionalEmail,
-  // Set when importing an existing contact. Otherwise the contacts are created.
-  ghlContactId: z.string().trim().min(1).max(100).optional(),
-  billingContactId: z.string().trim().min(1).max(100).optional(),
 });
 
 export function createApp(deps: Deps) {
@@ -428,20 +417,21 @@ export function createApp(deps: Deps) {
     return { contacts: contacts.map((c) => ({ ...c, studentName: linked.get(c.id) ?? null })) };
   }));
   teacher.post("/students", wrap(async (req) => {
-    const input = parse(studentSchema, req.body);
-    const isMinor = input.ageCategory === "child";
-    if (!isMinor && !input.email) throw new ApiError(400, "invalid_input", "Enter the student's email address.");
-    if (isMinor && !input.guardianName) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's name.");
-    if (isMinor && !input.guardianEmail) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's email address.");
+    const input = parseNewStudent(req.body);
     const ghl = needGhl();
     const { store } = needStore();
     await store.checkStudentSchema();
+    const roster = await store.listStudents();
+    if (input.email && roster.some((s) => (s.email ?? "").toLowerCase() === input.email)) {
+      throw new ApiError(409, "student_already_exists", studentFormMessages.duplicateEmail);
+    }
     const details = {
       fullName: input.fullName,
-      isMinor,
-      email: input.email || null,
-      guardianName: isMinor ? input.guardianName! : null,
-      guardianEmail: isMinor ? input.guardianEmail! : null,
+      isMinor: input.isMinor,
+      email: input.email,
+      guardianName: input.guardianName,
+      guardianEmail: input.guardianEmail,
+      format: input.format,
     };
     let linked: { ghlContactId: string; billingContactId: string; createdContactIds: string[]; contacts?: Record<string, string> };
     if (input.ghlContactId) {
@@ -454,14 +444,23 @@ export function createApp(deps: Deps) {
         });
       }
     } else {
-      linked = await resolveStudentContacts(ghl, await store.listStudents(), details);
+      linked = await resolveStudentContacts(ghl, roster, details);
     }
     let student;
     try {
       student = await store.createStudent({ ...details, ghlContactId: linked.ghlContactId, billingContactId: linked.billingContactId });
     } catch (e) {
-      // Keeps a record of contacts GoHighLevel now has with no student attached.
-      if (linked.createdContactIds.length) await audit(req, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+      // A failed insert must not leave contacts this request created. Reused contacts stay.
+      if (linked.createdContactIds.length) {
+        for (const id of linked.createdContactIds) {
+          try {
+            await ghl.deleteContact(id);
+          } catch {
+            console.error(`[ghl] could not remove contact ${id} after the student record failed to save`);
+          }
+        }
+        await audit(req, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+      }
       throw e;
     }
     if (!student) throw new ApiError(409, "contact_already_linked", "That GoHighLevel contact is already linked to a student.");

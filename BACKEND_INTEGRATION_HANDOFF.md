@@ -48,6 +48,7 @@ Set these in Vercel scoped to **Preview** first, so production is unaffected. **
 | `GHL_PRIVATE_INTEGRATION_TOKEN`, `GHL_LOCATION_ID`, `GHL_LESSON_CALENDAR_ID` | Lessons, invoices | All three, or GHL stays "not configured" |
 | `GHL_TIMEZONE` | Optional | Defaults to `America/Los_Angeles` |
 | `GHL_INVOICE_SENDER_USER_ID` | Pay Now | GHL user invoices are sent as. Setting it lets Pay Now send real messages. |
+| `GHL_SAFE_MODE` | Optional | On by default except when `VERCEL_ENV=production` (Preview counts as non-production even though `NODE_ENV` is `production`). `true`/`false` overrides the default. See GoHighLevel safe mode below. |
 | `GHL_WEBHOOK_PUBLIC_KEY` | Optional | See Payments |
 
 `VITE_PORTAL_DEMO` must stay unset in Vercel (production builds ignore it regardless).
@@ -137,21 +138,33 @@ Lesson notes, drafts, video files and assignments for minors need row-level priv
 
 Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both create a row in `students`, and the student appears straight away in the Account Invitations dropdown, which fills in their details when chosen.
 
-- **Add Student** needs no existing contact. An adult gets one contact, used for billing too. A child gets their own contact plus the guardian's as billing contact, and siblings with the same guardian email share it. Contacts with a matching email are reused unchanged, through `GET /contacts/search/duplicate`, and a `400` with `meta.contactId` from `POST /contacts/` is treated as a match. New contacts have `source: "SF Trad Music portal"`.
+- **Add Student** needs no existing contact and does not ask the teacher to open GoHighLevel. The form collects the student's name, email, whether they are an adult or a minor, the guardian's name and email for a minor, and the lesson format (in person or Zoom). An adult gets one contact, used for billing too. A minor gets their own contact plus the guardian's as billing contact, and siblings with the same guardian email share it. Contacts with a matching email are reused unchanged, through `GET /contacts/search/duplicate`, and a `400` with `meta.contactId` from `POST /contacts/` is treated as a match. New contacts have `source: "SF Trad Music portal"`. In safe mode they also have `dnd: true` and the tag `portal-test`.
 - **Import** links a contact you pick, as before.
-- **Duplicates** return `409` before anything is created: same student email, an already-linked contact, or the same child name under the same guardian.
+- **Duplicates** return `409` before anything is created. A repeated student email returns `student_already_exists` with "A student with this email is already enrolled." The same code, with "This student is already enrolled.", covers an already-linked contact on the create path and the same minor name under the same guardian. Importing a contact id that is already on a student returns `contact_already_linked`.
 
-**Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and give the GHL token `contacts.readonly` and `contacts.write`. None of these contact calls has run live, including the duplicate response shape.
+**Test fixture.** Tests and examples use Arzo Luper, `luperdev@gmail.com`, GoHighLevel contact `RQgd4luPVk9r2srPBlHr`. That contact already exists in the studio location. Tests mock GoHighLevel and Supabase and must not call the live API or create a contact. The location id stays in `GHL_LOCATION_ID` only.
 
-**Check before first live use:** new contacts may fire GHL workflows, such as welcome messages. A child's contact holds a minor's name.
+**Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and give the GHL token `contacts.readonly` and `contacts.write`. None of these contact calls has run live, including the duplicate response shape. Deleting a contact created by a failed save uses `DELETE /contacts/{contactId}` and needs `contacts.write`.
 
-**If saving fails after a contact was created:** nothing deletes the contact. Its ID is in `audit_log` as `student.create_failed`. A retry reuses contacts with an email, but a child with no email of their own gets a second contact, so remove the spare one in GHL.
+**Check before first live use:** new contacts may fire GHL workflows, such as welcome messages. A minor's contact holds their name. Leave safe mode on for Preview so those contacts are do-not-disturb and tagged `portal-test`.
+
+**If saving the student row fails after a contact was created:** the route deletes only the contacts that this request created, then writes their ids to `audit_log` as `student.create_failed`. A contact that was only reused (for example Arzo Luper's existing contact) is not deleted. If a delete fails, the id is still in `audit_log` and the server log says the removal failed. A retry reuses a contact that still has that email.
 
 ## 3. Payments
 
-**Pay Now emails the customer their invoice link through GoHighLevel. Invoice notifications from the portal are email-only (owner's decision). It has not been run live.**
+**Pay Now emails the customer their invoice link through GoHighLevel. Invoice notifications from the portal are email-only (owner's decision): the send action is `email`, never `sms` or `sms_and_email`. It has not been run live.**
 
-The live invoice response has no hosted payment URL, so the portal doesn't open checkout itself, and it never builds a URL from a pattern. `POST /api/invoices/:id/send-payment-link`, in order: authorizes the payer → confirms the invoice belongs to them and is live, with money due → refuses if a link went out in the last 10 minutes (from `audit_log`, so it holds across server instances) → calls `POST /invoices/{id}/send` with `action: "email"` → records `invoice.link_sent`. GHL sends to the contact on the invoice. The browser can't supply a recipient.
+**Safe mode** (`GHL_SAFE_MODE`, on by default outside production) changes three calls and nothing else:
+
+| Call | Safe mode | Live mode |
+|---|---|---|
+| `POST /contacts/` | Adds `dnd: true` and tag `portal-test` | Neither field |
+| `POST` and `PUT /calendars/events/appointments` | `toNotify: false` | `toNotify: true` |
+| `POST /invoices/{id}/send` | Not called. The server logs the invoice id and that it would have emailed. The Pay Now response is `suppressed: true` and the screen says nothing was sent. | Called with `action: "email"` |
+
+SMS is not sent in either mode. Safe mode does not hide the service-role key or the GoHighLevel token; those stay server-side either way.
+
+The live invoice response has no hosted payment URL, so the portal doesn't open checkout itself, and it never builds a URL from a pattern. `POST /api/invoices/:id/send-payment-link`, in order: authorizes the payer → confirms the invoice belongs to them and is live, with money due → refuses if a link went out in the last 10 minutes (from `audit_log`, so it holds across server instances) → in safe mode, logs the email it would send and returns `suppressed: true`; otherwise calls `POST /invoices/{id}/send` with `action: "email"` → records `invoice.link_sent`. GHL sends to the contact on the invoice. The browser can't supply a recipient. No mode sends SMS.
 
 **To enable, with the owner's approval only:** add the `invoices.write` scope to the token, and set `GHL_INVOICE_SENDER_USER_ID` to the GHL user invoices should be sent as. Until it's set, Pay Now returns `503 payment_link_unavailable` and sends nothing.
 

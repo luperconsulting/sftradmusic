@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
+import { studentFormError } from "../../../shared/student-form";
 import type { AssignedVideoDTO, BillingDTO, GhlContactOption, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
 import { api, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -247,7 +248,7 @@ export function useTeacherVM(screen: string): VM {
     }
   }, []);
   const openAddStudent = (mode: "add" | "import") => {
-    open("addStudent", { mode, form: { ageCategory: "child" } });
+    open("addStudent", { mode, form: { ageCategory: "child", format: "In person" } });
     setContactResults(null);
     if (mode === "import") void searchContacts("");
   };
@@ -270,10 +271,25 @@ export function useTeacherVM(screen: string): VM {
     if (form.saving) return;
     const importing = dialog?.data.mode === "import";
     if (importing && !form.contact) return patchForm({ error: "Choose the student's GoHighLevel contact." });
+    const payload = {
+      fullName: form.fullName ?? "",
+      ageCategory: form.ageCategory,
+      email: form.email ?? "",
+      guardianName: form.guardianName ?? "",
+      guardianEmail: form.guardianEmail ?? "",
+      format: form.format,
+    };
+    const problem = studentFormError(payload);
+    if (problem) return patchForm({ error: problem });
     patchForm({ saving: true, error: "" });
     try {
       const { student, contacts } = await api("/teacher/students", { method: "POST", body: {
-        fullName: form.fullName, ageCategory: form.ageCategory, email: form.email, guardianName: form.guardianName, guardianEmail: form.guardianEmail,
+        fullName: payload.fullName.trim(),
+        ageCategory: payload.ageCategory,
+        email: payload.email.trim(),
+        guardianName: payload.guardianName.trim(),
+        guardianEmail: payload.guardianEmail.trim(),
+        format: payload.format,
         ...(importing ? { ghlContactId: form.contact.id, billingContactId: form.billing.id } : {}),
       } });
       setStudents((await api("/teacher/students")).students);
@@ -423,7 +439,8 @@ export function useTeacherVM(screen: string): VM {
         const taken = !!c.studentName && !form.pickingBilling;
         return { id: c.id, name: c.name, meta: taken ? `Already linked to ${c.studentName}` : c.email ?? "No email on file", disabled: taken, pick: () => pickContact(c) };
       }),
-      ages: [["child", "Child"], ["adult", "Adult"]].map(([id, label]) => ({ id, label, on: form.ageCategory === id, pick: () => patchForm({ ageCategory: id }) })),
+      ages: [["child", "Minor"], ["adult", "Adult"]].map(([id, label]) => ({ id, label, on: form.ageCategory === id, pick: () => patchForm({ ageCategory: id }) })),
+      formats: [["In person", "In person"], ["Zoom", "Zoom"]].map(([id, label]) => ({ id, label, on: form.format === id, pick: () => patchForm({ format: id }) })),
       isChild: form.ageCategory === "child", save: saveStudent,
       inviteCreated: () => { const id = form.created.id; close(); navigate("/teacher/invitations", { state: { studentId: id } }); },
     },

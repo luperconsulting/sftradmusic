@@ -43,7 +43,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/ghl/contacts") return { contacts: sampleContacts.map((c) => ({ ...c, studentName: addedStudents.find((s) => s.ghlContactId === c.id)?.fullName ?? null })) };
   if (p === "/teacher/students" && opts.method === "POST") {
     const b = opts.body as any;
-    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId ?? crypto.randomUUID() };
+    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), format: b.format === "Zoom" ? "Zoom" as const : "In person" as const, email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId ?? crypto.randomUUID() };
     addedStudents.push(s);
     return { student: { id: s.id, fullName: s.fullName }, contacts: b.ghlContactId ? null : { student: "created", billing: b.ageCategory === "child" ? "created" : "same" } };
   }

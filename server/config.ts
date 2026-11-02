@@ -11,6 +11,8 @@ export interface ServerConfig {
     lessonCalendarId: string;
     timezone: string;
     invoiceSenderUserId: string | null;
+    /** When true, contact creates are marked do-not-disturb and no invoice or booking notification is sent. */
+    safeMode: boolean;
   } | null;
   ghlWebhookPublicKey: string | null;
   videoBucket: string;
@@ -21,6 +23,18 @@ export interface ServerConfig {
     recurring: boolean;
     invoiceActions: boolean;
   };
+}
+
+/**
+ * Safe mode is on unless this process is a production deployment, or GHL_SAFE_MODE says otherwise.
+ * Vercel Preview runs with NODE_ENV=production, so the Vercel environment is what decides, not NODE_ENV alone.
+ */
+export function ghlSafeMode(env: Record<string, string | undefined>): boolean {
+  const raw = env.GHL_SAFE_MODE?.trim().toLowerCase();
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  if (env.VERCEL_ENV) return env.VERCEL_ENV !== "production";
+  return env.NODE_ENV !== "production";
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
@@ -42,6 +56,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
             lessonCalendarId: calendarId,
             timezone: env.GHL_TIMEZONE || "America/Los_Angeles",
             invoiceSenderUserId: env.GHL_INVOICE_SENDER_USER_ID || null,
+            safeMode: ghlSafeMode(env),
           }
         : null,
     ghlWebhookPublicKey: env.GHL_WEBHOOK_PUBLIC_KEY || null,

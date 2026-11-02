@@ -33,6 +33,7 @@ export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
     createContact: async ({ name, email }) => ({ contact: { id: `new-${name}`, name, email }, created: true }),
     searchContacts: async () => [],
     getContact: async (id) => ({ id, name: "Contact", email: null }),
+    deleteContact: async () => undefined,
     ...over,
   };
 }
