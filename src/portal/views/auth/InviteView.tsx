@@ -11,7 +11,7 @@ export default function InviteView({ v }: { v: VM }) {
         <>
           <span style={{ fontSize: "11px", letterSpacing: ".25em", textTransform: "uppercase", fontWeight: "600", color: "#9C5F22" }}>You're invited</span>
           <h2 style={{ fontFamily: "'Cinzel',Georgia,serif", fontWeight: "500", fontSize: "24px", letterSpacing: ".08em", textTransform: "uppercase", color: "#1D2A44", margin: "8px 0 6px" }}>Enter your code</h2>
-          <p style={{ fontSize: "14px", color: "rgba(17,22,27,.6)", margin: "0 0 28px", lineHeight: "1.6" }}>Use the email address the code was sent to, and the 6-digit code from that message.</p>
+          <p style={{ fontSize: "14px", color: "rgba(17,22,27,.6)", margin: "0 0 28px", lineHeight: "1.6" }}>Use the email address the code was sent to, and the code from that message.</p>
           <div style={{ display: "flex", flexDirection: "column", gap: "18px" }}>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               <span style={label}>Email address</span>
@@ -19,7 +19,7 @@ export default function InviteView({ v }: { v: VM }) {
             </label>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
               <span style={label}>Invitation code</span>
-              <input className="dc-f6" inputMode="numeric" autoComplete="one-time-code" maxLength={6} value={v.su.otp ?? ""} onChange={v.su.setOtp} placeholder="000000" style={{ ...field, fontFamily: "'Cinzel',Georgia,serif", letterSpacing: ".28em", fontSize: "22px", textAlign: "center" }} />
+              <input className="dc-f6" inputMode="numeric" autoComplete="one-time-code" maxLength={10} value={v.su.otp ?? ""} onChange={v.su.setOtp} placeholder="Code" style={{ ...field, fontFamily: "'Cinzel',Georgia,serif", letterSpacing: ".2em", fontSize: "22px", textAlign: "center" }} />
             </label>
             <button className="dc-h7" onClick={v.su.submitOtp} style={button}>Continue</button>
           </div>

@@ -138,7 +138,7 @@ export interface AuthAdmin {
    * Returns null: the login is confirmed only when the code is verified.
    */
   sendPortalInvite(email: string, redirectTo: string): Promise<string | null>;
-  /** Checks a 6-digit email code. Null when Supabase rejects it. Does not log the code. */
+  /** Checks the email OTP from {{ .Token }} with verifyOtp type "email". Null when Supabase rejects it. */
   verifyEmailOtp(email: string, code: string): Promise<{ userId: string; accessToken: string; refreshToken: string } | null>;
   sendPasswordReset(email: string): Promise<void>;
   setBanned(userId: string, banned: boolean): Promise<void>;

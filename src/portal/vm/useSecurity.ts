@@ -1,6 +1,7 @@
 import { useCallback, useState } from "react";
 import { errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
+import { markMfaVerified } from "../auth/teacherGate";
 import { DEMO_MODE, supabase } from "../auth/supabase";
 import { copy } from "./common";
 
@@ -52,6 +53,7 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
       return false;
     }
     setEnroll(null);
+    markMfaVerified();
     await refresh();
     flash("Two-factor authentication is on.");
     return true;

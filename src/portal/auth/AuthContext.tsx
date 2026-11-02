@@ -1,6 +1,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import type { MeResponse } from "../../../shared/portal-types";
 import { api, ApiRequestError } from "../api/client";
+import { teacherMfaPending, teacherMustReauthenticate, teacherPortalReady } from "./teacherGate";
 import { DEMO_MODE, supabase } from "./supabase";
 
 export type AuthStatus = "loading" | "signedOut" | "needsMfa" | "ready" | "suspended" | "noAccount" | "unavailable";
@@ -24,6 +25,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (DEMO_MODE) {
+      // Sample data never opens the teacher portal by itself. Sign-in has to be clicked first.
+      if (!teacherPortalReady()) {
+        setMe(null);
+        setStatus("signedOut");
+        return;
+      }
       setMe(await api<MeResponse>("/me"));
       setStatus("ready");
       return;
@@ -41,9 +48,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     try {
       const profile = await api<MeResponse>("/me");
+      // A stored teacher session is not a new login. Drop it until this page gets a password and a 2FA challenge.
+      if (teacherMustReauthenticate(profile.user.role)) {
+        await supabase.auth.signOut({ scope: "local" });
+        setMe(null);
+        setStatus("signedOut");
+        return;
+      }
       setMe(profile);
-      // The server enforces this on every request. Checking here only decides which screen to show.
-      const needsMfa = profile.user.aal !== "aal2" || !profile.user.mfaEnabled;
+      const needsMfa = profile.user.role === "teacher"
+        ? teacherMfaPending(profile.user.role, profile.user.aal)
+        : profile.user.aal !== "aal2" || !profile.user.mfaEnabled;
       setStatus(needsMfa ? "needsMfa" : "ready");
     } catch (e) {
       setMe(null);

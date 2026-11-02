@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
 import { loadConfig, safeInviteAllowlist } from "../server/config";
+import { isEmailOtp } from "../shared/email-otp";
 import { portalInvitePage } from "../server/services/invitations";
 import { buildDeps, fakeGhl, STUDENT_A } from "./helpers";
 
@@ -287,6 +288,26 @@ describe("email code verification", () => {
     expect(res.status).toBe(401);
     expect(createStudent).not.toHaveBeenCalled();
     expect(claimInvitation).not.toHaveBeenCalled();
+  });
+
+  it("forwards 6, 8, and 10 digit codes to verifyOtp type email, and rejects other lengths", async () => {
+    expect(isEmailOtp("48291370")).toBe(true);
+    for (const code of ["482913", "48291370", "1234567890"]) {
+      const verifyEmailOtp = vi.fn(async () => null);
+      const deps = buildDeps({}, null, { findPendingInvitationByEmail: async () => pending } as any);
+      (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
+      const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
+      expect(res.status).toBe(401);
+      expect(verifyEmailOtp).toHaveBeenCalledWith(ARZO, code);
+    }
+    for (const code of ["12345", "12345678901"]) {
+      const verifyEmailOtp = vi.fn();
+      const deps = buildDeps({}, null, { findPendingInvitationByEmail: async () => pending } as any);
+      (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
+      const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
+      expect(res.status).toBe(400);
+      expect(verifyEmailOtp).not.toHaveBeenCalled();
+    }
   });
 
   it("rate limits code attempts", async () => {
