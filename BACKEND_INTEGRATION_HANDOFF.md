@@ -135,9 +135,17 @@ Lesson notes, drafts, video files and assignments for minors need row-level priv
 
 ## Adding students
 
-Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both create a row in `students`, linked to a real GHL contact the server checks first, and the student appears straight away in the Account Invitations dropdown, which fills in their details when chosen.
+Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both create a row in `students`, and the student appears straight away in the Account Invitations dropdown, which fills in their details when chosen.
 
-**Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and confirm the GHL token has `contacts.readonly`. `POST /contacts/search` hasn't been called live yet. One GHL contact can link to only one student (`ghl_contact_id` is unique), so siblings need separate contacts, with the parent as their billing contact.
+- **Add Student** needs no existing contact. An adult gets one contact, used for billing too. A child gets their own contact plus the guardian's as billing contact, and siblings with the same guardian email share it. Contacts with a matching email are reused unchanged, through `GET /contacts/search/duplicate`, and a `400` with `meta.contactId` from `POST /contacts/` is treated as a match. New contacts have `source: "SF Trad Music portal"`.
+- **Import** links a contact you pick, as before.
+- **Duplicates** return `409` before anything is created: same student email, an already-linked contact, or the same child name under the same guardian.
+
+**Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and give the GHL token `contacts.readonly` and `contacts.write`. None of these contact calls has run live, including the duplicate response shape.
+
+**Check before first live use:** new contacts may fire GHL workflows, such as welcome messages. A child's contact holds a minor's name.
+
+**If saving fails after a contact was created:** nothing deletes the contact. Its ID is in `audit_log` as `student.create_failed`. A retry reuses contacts with an email, but a child with no email of their own gets a second contact, so remove the spare one in GHL.
 
 ## 3. Payments
 

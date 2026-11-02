@@ -39,6 +39,10 @@ export interface GhlClient {
   getInvoice(invoiceId: string): Promise<any>;
   searchContacts(query: string): Promise<GhlContact[]>;
   getContact(contactId: string): Promise<GhlContact>;
+  /** Null when this location has no contact with that email. */
+  findContactByEmail(email: string): Promise<GhlContact | null>;
+  /** Creates a contact. `created` is false when GoHighLevel matched an existing one instead. */
+  createContact(input: { name: string; email: string | null }): Promise<{ contact: GhlContact; created: boolean }>;
   /** Sends an existing invoice to the contact it's addressed to. This delivers real messages. */
   sendInvoice(invoiceId: string, input: { userId: string; liveMode: boolean }): Promise<unknown>;
 }
@@ -70,6 +74,12 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
     }
     if (!res.ok) {
       console.error(`[ghl] ${init.method || "GET"} ${path.split("?")[0]} -> ${res.status}`);
+      if (path === "/contacts/") {
+        if (res.status === 401 || res.status === 403) throw new ApiError(503, "ghl_contact_permission", "GoHighLevel didn't allow creating a contact. The connection needs the contacts.write permission.");
+        // With duplicates turned off, GoHighLevel refuses and names the contact it matched.
+        const duplicateId = res.status === 400 ? (await res.json().catch(() => null))?.meta?.contactId : null;
+        if (duplicateId) return { duplicateId };
+      }
       if (res.status === 404) throw new ApiError(404, "not_found", "Not found.");
       if (res.status === 400 || res.status === 422) throw new ApiError(409, "ghl_rejected", "That request couldn't be completed. Please choose another time or try again.");
       throw new ApiError(503, "ghl_unavailable", "We couldn't reach the scheduling and billing system. Please try again shortly.");
@@ -139,6 +149,21 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
     async getContact(contactId) {
       const data = await call(`/contacts/${encodeURIComponent(contactId)}`, CRM_VERSION);
       return toContact(data.contact ?? data);
+    },
+    async findContactByEmail(email) {
+      const q = new URLSearchParams({ locationId: config.locationId, email });
+      const found = (await call(`/contacts/search/duplicate?${q}`, CRM_VERSION)).contact;
+      return found?.id ? toContact(found) : null;
+    },
+    async createContact({ name, email }) {
+      const [firstName, ...rest] = name.trim().split(/\s+/);
+      const data = await call("/contacts/", CRM_VERSION, {
+        method: "POST",
+        body: JSON.stringify({ locationId: config.locationId, firstName, lastName: rest.join(" ") || undefined, name, ...(email ? { email } : {}), source: "SF Trad Music portal" }),
+      });
+      if (data.duplicateId) return { contact: { id: data.duplicateId, name, email }, created: false };
+      if (!data.contact?.id) throw new ApiError(503, "ghl_unavailable", "We couldn't reach the scheduling and billing system. Please try again shortly.");
+      return { contact: toContact(data.contact), created: true };
     },
     getInvoice: (invoiceId) => call(`/invoices/${encodeURIComponent(invoiceId)}?${invoiceQuery({})}`, CRM_VERSION),
     sendInvoice: (invoiceId, input) =>

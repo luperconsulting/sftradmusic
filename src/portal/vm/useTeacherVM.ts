@@ -249,7 +249,7 @@ export function useTeacherVM(screen: string): VM {
   const openAddStudent = (mode: "add" | "import") => {
     open("addStudent", { mode, form: { ageCategory: "child" } });
     setContactResults(null);
-    void searchContacts("");
+    if (mode === "import") void searchContacts("");
   };
   const patchForm = (patch: any) => setForm((f: any) => ({ ...f, ...patch }));
   const pickContact = (c: GhlContactOption) => {
@@ -260,17 +260,24 @@ export function useTeacherVM(screen: string): VM {
       ...(isFirst && dialog?.data.mode === "import" ? { fullName: c.name, email: c.email ?? "" } : {}),
     });
   };
+  const contactNote = (c: { student: string; billing: string } | null) => {
+    if (!c) return "";
+    const student = c.student === "created" ? "A new GoHighLevel contact was created for them" : "Their existing GoHighLevel contact was linked";
+    if (c.billing === "same") return `${student}.`;
+    return `${student}. ${c.billing === "created" ? "A new contact was created for the parent, for invoices" : "The parent's existing contact will receive invoices"}.`;
+  };
   const saveStudent = async () => {
     if (form.saving) return;
-    if (!form.contact) return patchForm({ error: "Choose the student's GoHighLevel contact." });
+    const importing = dialog?.data.mode === "import";
+    if (importing && !form.contact) return patchForm({ error: "Choose the student's GoHighLevel contact." });
     patchForm({ saving: true, error: "" });
     try {
-      const { student } = await api("/teacher/students", { method: "POST", body: {
+      const { student, contacts } = await api("/teacher/students", { method: "POST", body: {
         fullName: form.fullName, ageCategory: form.ageCategory, email: form.email, guardianName: form.guardianName, guardianEmail: form.guardianEmail,
-        ghlContactId: form.contact.id, billingContactId: form.billing.id,
+        ...(importing ? { ghlContactId: form.contact.id, billingContactId: form.billing.id } : {}),
       } });
       setStudents((await api("/teacher/students")).students);
-      patchForm({ saving: false, created: student });
+      patchForm({ saving: false, created: { ...student, contactNote: contactNote(contacts) } });
     } catch (e) {
       patchForm({ saving: false, error: errorText(e) });
     }
@@ -406,7 +413,7 @@ export function useTeacherVM(screen: string): VM {
     sf: {
       form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value }), created: form.created, saving: !!form.saving, error: form.error,
       contact: form.contact, billing: form.billing, pickingBilling: !!form.pickingBilling,
-      showContactPicker: !form.contact || !!form.pickingContact || !!form.pickingBilling,
+      showContactPicker: dialog?.data.mode === "import" && (!form.contact || !!form.pickingContact || !!form.pickingBilling),
       showFields: (dialog?.data.mode !== "import" || !!form.contact) && !form.pickingBilling && !form.pickingContact,
       changeContact: () => patchForm({ pickingContact: true }), changeBilling: () => patchForm({ pickingBilling: true }),
       query: form.query ?? "", setQuery: (e: any) => patchForm({ query: e.target.value }), search: () => searchContacts(form.query ?? ""),

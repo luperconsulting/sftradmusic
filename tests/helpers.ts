@@ -29,6 +29,8 @@ export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
     listInvoices: async () => ({ invoices: [], total: 0 }),
     getInvoice: async () => rawInvoice(),
     sendInvoice: async () => ({}),
+    findContactByEmail: async () => null,
+    createContact: async ({ name, email }) => ({ contact: { id: `new-${name}`, name, email }, created: true }),
     searchContacts: async () => [],
     getContact: async (id) => ({ id, name: "Contact", email: null }),
     ...over,
@@ -58,6 +60,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     listAssignments: async () => [],
     audit: async () => undefined,
     lastInvoiceLinkSentAt: async () => null,
+    checkStudentSchema: async () => undefined,
     ...store,
   };
   return {

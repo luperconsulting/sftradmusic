@@ -1,3 +1,4 @@
+import { resolveStudentContacts } from "./services/students.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -79,7 +80,8 @@ const studentSchema = z.object({
   email: optionalEmail,
   guardianName: z.string().trim().max(120).optional(),
   guardianEmail: optionalEmail,
-  ghlContactId: z.string().trim().min(1).max(100),
+  // Set when importing an existing contact. Otherwise the contacts are created.
+  ghlContactId: z.string().trim().min(1).max(100).optional(),
   billingContactId: z.string().trim().min(1).max(100).optional(),
 });
 
@@ -433,26 +435,38 @@ export function createApp(deps: Deps) {
     if (isMinor && !input.guardianEmail) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's email address.");
     const ghl = needGhl();
     const { store } = needStore();
-    const billingContactId = input.billingContactId ?? input.ghlContactId;
-    // Bookings and the balance check rely on these, so both must be real contacts.
-    for (const id of new Set([input.ghlContactId, billingContactId])) {
-      await ghl.getContact(id).catch((e) => {
-        if (e instanceof ApiError && e.status === 404) throw new ApiError(400, "contact_not_found", "That GoHighLevel contact wasn't found.");
-        throw e;
-      });
-    }
-    const student = await store.createStudent({
+    await store.checkStudentSchema();
+    const details = {
       fullName: input.fullName,
       isMinor,
       email: input.email || null,
       guardianName: isMinor ? input.guardianName! : null,
       guardianEmail: isMinor ? input.guardianEmail! : null,
-      ghlContactId: input.ghlContactId,
-      billingContactId,
-    });
+    };
+    let linked: { ghlContactId: string; billingContactId: string; createdContactIds: string[]; contacts?: Record<string, string> };
+    if (input.ghlContactId) {
+      linked = { ghlContactId: input.ghlContactId, billingContactId: input.billingContactId ?? input.ghlContactId, createdContactIds: [] };
+      // Bookings and the balance check rely on these, so both must be real contacts.
+      for (const id of new Set([linked.ghlContactId, linked.billingContactId])) {
+        await ghl.getContact(id).catch((e) => {
+          if (e instanceof ApiError && e.status === 404) throw new ApiError(400, "contact_not_found", "That GoHighLevel contact wasn't found.");
+          throw e;
+        });
+      }
+    } else {
+      linked = await resolveStudentContacts(ghl, await store.listStudents(), details);
+    }
+    let student;
+    try {
+      student = await store.createStudent({ ...details, ghlContactId: linked.ghlContactId, billingContactId: linked.billingContactId });
+    } catch (e) {
+      // Keeps a record of contacts GoHighLevel now has with no student attached.
+      if (linked.createdContactIds.length) await audit(req, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+      throw e;
+    }
     if (!student) throw new ApiError(409, "contact_already_linked", "That GoHighLevel contact is already linked to a student.");
     await audit(req, "student.create", student.id);
-    return { student: { id: student.id, fullName: student.fullName } };
+    return { student: { id: student.id, fullName: student.fullName }, contacts: linked.contacts ?? null };
   }));
   teacher.get("/students/:id", wrap(async (req) => {
     const student = await loadStudent(req, parse(uuid, req.params.id));

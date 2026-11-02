@@ -11,7 +11,7 @@ export default function AddStudentDialog({ v }: { v: VM }) {
   if (s.created) {
     return (
       <>
-        <p style={{ fontSize: "14px", color: "rgba(17,22,27,.7)", margin: "0", lineHeight: "1.6" }}><strong>{s.created.fullName}</strong> is now in your students and ready to invite.</p>
+        <p style={{ fontSize: "14px", color: "rgba(17,22,27,.7)", margin: "0", lineHeight: "1.6" }}><strong>{s.created.fullName}</strong> is now in your students and ready to invite. {s.created.contactNote}</p>
         <button className="dc-h3" onClick={s.inviteCreated} style={primary}>Create invitation</button>
         <button onClick={v.closeDialog} style={{ ...link, alignSelf: "center" }}>Done</button>
       </>

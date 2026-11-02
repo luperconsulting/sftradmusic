@@ -10,6 +10,9 @@ function must<T>(res: { data: T | null; error: { message: string } | null }): T 
   return res.data as T;
 }
 
+const needsStudentEmailColumn = (error: { code?: string } | null) => error?.code === "PGRST204" || error?.code === "42703";
+const studentMigrationError = () => new ApiError(503, "migration_required", "Student records need a database update first (migration 0002).");
+
 const toAccount = (r: any): AccountRecord => ({
   id: r.id,
   userId: r.user_id,
@@ -108,6 +111,11 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async listStudents() {
       return (must(await db.from("students").select("*").order("full_name")) as any[]).map(toStudent);
     },
+    async checkStudentSchema() {
+      const { error } = await db.from("students").select("email").limit(1);
+      if (needsStudentEmailColumn(error)) throw studentMigrationError();
+      must({ data: [], error });
+    },
     async createStudent(input) {
       const { data, error } = await db.from("students").insert({
         first_name: input.fullName.split(/\s+/)[0],
@@ -121,7 +129,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       }).select("*").single();
       if (error?.code === "23505") return null;
       // The email column comes from migration 0002.
-      if (error?.code === "PGRST204" || error?.code === "42703") throw new ApiError(503, "migration_required", "Student records need a database update first (migration 0002).");
+      if (needsStudentEmailColumn(error)) throw studentMigrationError();
       return toStudent(must({ data, error }));
     },
     async studentCounts() {

@@ -28,6 +28,116 @@ function setup(ghl = fakeGhl()) {
   return { post, get, createStudent };
 }
 
+const newChild = { fullName: "Rowan Sample", ageCategory: "child", guardianName: "Pat Sample", guardianEmail: "pat@example.com" };
+const newAdult = { fullName: "Ada Sample", ageCategory: "adult", email: "ada@example.com" };
+const contact = (id: string, email: string | null = null) => ({ id, name: id, email });
+
+describe("enrolling without an existing contact", () => {
+  it("creates one contact for an adult, who pays their own invoices", async () => {
+    const createContact = vi.fn(async (i: any) => ({ contact: contact("adult1", i.email), created: true }));
+    const { post, createStudent } = setup(fakeGhl({ createContact }));
+    const res = await post("/api/teacher/students", newAdult);
+    expect(res.status).toBe(200);
+    expect(res.body.contacts).toEqual({ student: "created", billing: "same" });
+    expect(createContact).toHaveBeenCalledTimes(1);
+    expect(createStudent.mock.calls[0][0]).toMatchObject({ ghlContactId: "adult1", billingContactId: "adult1", isMinor: false });
+  });
+
+  it("creates a student contact and a guardian billing contact for a child, saving both", async () => {
+    const createContact = vi.fn(async (i: any) => ({ contact: contact(i.email ? "guardian1" : "child1", i.email), created: true }));
+    const { post, createStudent } = setup(fakeGhl({ createContact }));
+    const res = await post("/api/teacher/students", newChild);
+    expect(res.status).toBe(200);
+    expect(res.body.contacts).toEqual({ student: "created", billing: "created" });
+    expect(createStudent.mock.calls[0][0]).toMatchObject({ ghlContactId: "child1", billingContactId: "guardian1", guardianEmail: "pat@example.com" });
+  });
+
+  it("reuses a guardian's contact, so siblings share one payer", async () => {
+    const createContact = vi.fn(async (i: any) => ({ contact: contact(`child-${i.name}`), created: true }));
+    const { post, createStudent } = setup(fakeGhl({ createContact, findContactByEmail: async (e) => (e === "pat@example.com" ? contact("guardian1", e) : null) }));
+    expect((await post("/api/teacher/students", newChild)).body.contacts.billing).toBe("reused");
+    expect((await post("/api/teacher/students", { ...newChild, fullName: "Skye Sample" })).status).toBe(200);
+    expect(createContact).toHaveBeenCalledTimes(2);
+    expect(createStudent.mock.calls.map((c: any) => c[0].billingContactId)).toEqual(["guardian1", "guardian1"]);
+  });
+
+  it("links an adult's existing contact instead of creating another", async () => {
+    const createContact = vi.fn();
+    const { post, createStudent } = setup(fakeGhl({ createContact, findContactByEmail: async () => contact("existing", "ada@example.com") }));
+    const res = await post("/api/teacher/students", newAdult);
+    expect(res.body.contacts.student).toBe("reused");
+    expect(createContact).not.toHaveBeenCalled();
+    expect(createStudent.mock.calls[0][0].ghlContactId).toBe("existing");
+  });
+
+  it("uses the match GoHighLevel names when it refuses a duplicate", async () => {
+    const fetchImpl = vi.fn(async () => new Response(JSON.stringify({ message: "duplicate", meta: { contactId: "matched" } }), { status: 400 }));
+    const client = createGhlClient({ token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC" } as any, fetchImpl as any);
+    expect(await client.createContact({ name: "A B", email: "a@example.com" })).toMatchObject({ contact: { id: "matched" }, created: false });
+    const [url, init] = fetchImpl.mock.calls[0] as any;
+    expect(url).toMatch(/\/contacts\/$/);
+    expect(JSON.parse(init.body)).toMatchObject({ locationId: "loc", firstName: "A", lastName: "B", email: "a@example.com" });
+  });
+
+  it("doesn't put a parent's email on the child's contact", async () => {
+    const createContact = vi.fn(async (i: any) => ({ contact: contact(i.name, i.email), created: true }));
+    const { post } = setup(fakeGhl({ createContact }));
+    await post("/api/teacher/students", { ...newChild, email: "pat@example.com" });
+    expect(createContact.mock.calls.find((c: any) => c[0].name === "Rowan Sample")![0].email).toBeNull();
+  });
+
+  it("refuses enrolling the same child or adult twice, creating nothing more", async () => {
+    const createContact = vi.fn(async (i: any) => ({ contact: contact(`c-${i.name}`, i.email), created: true }));
+    const { post } = setup(fakeGhl({ createContact }));
+    await post("/api/teacher/students", newChild);
+    await post("/api/teacher/students", newAdult);
+    const before = createContact.mock.calls.length;
+    for (const body of [newChild, { ...newChild, fullName: "rowan sample" }, newAdult]) {
+      const res = await post("/api/teacher/students", body);
+      expect(res.status).toBe(409);
+      expect(res.body.error.code).toBe("student_already_exists");
+    }
+    expect(createContact).toHaveBeenCalledTimes(before);
+  });
+
+  it("saves no student when a contact can't be created, and reuses the guardian on retry", async () => {
+    const { ApiError } = await import("../server/http");
+    let guardianMade = false;
+    const createContact = vi.fn(async (i: any) => {
+      if (i.email) { guardianMade = true; return { contact: contact("guardian1", i.email), created: true }; }
+      if (createContact.mock.calls.length <= 2) throw new ApiError(503, "ghl_contact_permission", "No permission.");
+      return { contact: contact("child1"), created: true };
+    });
+    const { post, createStudent } = setup(fakeGhl({ createContact, findContactByEmail: async (e) => (guardianMade ? contact("guardian1", e) : null) }));
+    const res = await post("/api/teacher/students", newChild);
+    expect(res.status).toBe(503);
+    expect(createStudent).not.toHaveBeenCalled();
+    expect((await post("/api/teacher/students", newChild)).status).toBe(200);
+    expect(createContact.mock.calls.filter((c: any) => c[0].email)).toHaveLength(1);
+  });
+
+  it("contacts GoHighLevel not at all when the database isn't ready", async () => {
+    const { ApiError } = await import("../server/http");
+    const createContact = vi.fn();
+    const findContactByEmail = vi.fn();
+    const app = createApp(buildDeps(users, fakeGhl({ createContact, findContactByEmail }), { checkStudentSchema: async () => { throw new ApiError(503, "migration_required", "Update needed."); } } as any));
+    const res = await request(app).post("/api/teacher/students").set("Authorization", "Bearer teach").send(newAdult);
+    expect(res.status).toBe(503);
+    expect(findContactByEmail).not.toHaveBeenCalled();
+    expect(createContact).not.toHaveBeenCalled();
+  });
+
+  it("records contacts left behind if saving the student fails", async () => {
+    const audit = vi.fn(async () => undefined);
+    const app = createApp(buildDeps(users, fakeGhl({ createContact: async () => ({ contact: contact("orphan"), created: true }) }), {
+      audit, listStudents: async () => [], createStudent: async () => { throw new Error("db"); },
+    } as any));
+    const res = await request(app).post("/api/teacher/students").set("Authorization", "Bearer teach").send(newAdult);
+    expect(res.status).toBe(500);
+    expect(audit).toHaveBeenCalledWith("teach", "student.create_failed", "", { createdContactIds: ["orphan"] });
+  });
+});
+
 describe("adding students", () => {
   it("creates a student, lists them straight away, and can invite them", async () => {
     const { post, get } = setup();
@@ -51,7 +161,7 @@ describe("adding students", () => {
     ["child without a guardian", { ...child, guardianName: "" }],
     ["child without a guardian email", { ...child, guardianEmail: "" }],
     ["adult without an email", { fullName: "A B", ageCategory: "adult", ghlContactId: "c1" }],
-    ["no contact", { ...child, ghlContactId: "" }],
+    ["blank contact", { ...child, ghlContactId: "" }],
     ["no name", { ...child, fullName: " " }],
   ])("rejects a %s", async (_n, body) => {
     const { post, createStudent } = setup();
