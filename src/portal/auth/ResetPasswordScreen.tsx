@@ -55,7 +55,7 @@ export default function ResetPasswordScreen() {
     const { error: err } = await supabase.auth.updateUser({ password: pw });
     setBusy(false);
     if (err?.code === "weak_password") return setError(err.message);
-    if (err) return setError("This reset link has expired. Ask Zane to send a new one.");
+    if (err) return setError("This reset link has expired. Request a new one from the sign-in page.");
     // Ends every session, including this recovery one, so the new password has to be used.
     await supabase.auth.signOut({ scope: "global" });
     await signOut();
@@ -65,7 +65,7 @@ export default function ResetPasswordScreen() {
     <AuthLayout v={{ authTitle: "Student Portal", go: { home: () => { window.location.href = "/"; } } }}>
       <h2 style={{ fontFamily: "'Cinzel',Georgia,serif", fontWeight: 500, fontSize: 26, margin: "0 0 18px", color: "#1D2A44" }}>Choose a new password</h2>
       {linkState === "checking" && <p role="status" style={{ fontSize: 13, color: "rgba(17,22,27,.6)" }}>Checking your reset link…</p>}
-      {linkState === "invalid" && <p role="alert" style={{ fontSize: 14, color: "#9C5F22", lineHeight: 1.6 }}>This reset link is invalid or has expired. Ask Zane to send a new one.</p>}
+      {linkState === "invalid" && <p role="alert" style={{ fontSize: 14, color: "#9C5F22", lineHeight: 1.6 }}>This reset link is invalid or has expired. Request a new one from the sign-in page.</p>}
       {linkState === "valid" && <>
       {error && <div role="alert" style={{ marginBottom: 14, fontSize: 13, color: "#9C5F22" }}>{error}</div>}
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>

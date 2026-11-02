@@ -175,7 +175,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     try {
       await api(`/invoices/${target.id}/send-payment-link`, { method: "POST" });
       close();
-      flash("Your payment link is on its way to your email and phone. Your balance updates here once the payment clears.");
+      flash("Your payment link is on its way to your email. Your balance updates here once the payment clears.");
     } catch (err) {
       flash(errorText(err));
     } finally {

@@ -123,7 +123,7 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
     sendInvoice: (invoiceId, input) =>
       call(`/invoices/${encodeURIComponent(invoiceId)}/send`, CRM_VERSION, {
         method: "POST",
-        body: JSON.stringify({ altId: config.locationId, altType: "location", userId: input.userId, action: "sms_and_email", liveMode: input.liveMode }),
+        body: JSON.stringify({ altId: config.locationId, altType: "location", userId: input.userId, action: "email", liveMode: input.liveMode }),
       }),
   };
 }

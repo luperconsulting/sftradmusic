@@ -54,6 +54,20 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     setBusy(false);
   }, [busy, email, password, refresh]);
 
+  const forgotPassword = useCallback(async () => {
+    if (busy) return;
+    if (!supabase) return setError(NOT_CONFIGURED);
+    const address = email.trim();
+    if (!address) return setError("Enter your email address above, then choose Forgot your password.");
+    setBusy(true);
+    setError("");
+    const { error: err } = await supabase.auth.resetPasswordForEmail(address, { redirectTo: `${window.location.origin}/reset-password` });
+    setBusy(false);
+    if (err) return setError("We couldn't send a reset email just now. Please try again in a few minutes.");
+    // The same message whether or not the address has an account.
+    flash("If that email has an account, a password reset link is on its way.");
+  }, [busy, email, flash]);
+
   const verifyCode = useCallback(async (value: string) => {
     if (!supabase || busy) return;
     setBusy(true);
@@ -151,7 +165,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     is: { signin: screen === "signin", signup: screen === "signup", invite: screen === "invite", twofa: screen === "twofa", denied: screen === "denied", settings: false },
     sub, su, email, setEmail: (e: any) => setEmail(e.target.value), password, setPassword: (e: any) => setPassword(e.target.value), confirm, setConfirm: (e: any) => setConfirm(e.target.value),
     submitOnEnter: (e: any) => { if (e.key === "Enter") void signIn(); },
-    signIn, signInError: error, configured, status, formError: error,
+    signIn, forgotPassword, signInError: error, configured, status, formError: error,
     verify: () => (dialog === "recovery" ? flash("Recovery codes aren't available yet. Contact support to restore access.") : verifyCode(digits.join(""))),
     codeDigits, twofaLabel: me?.user.role === "teacher" ? "Teacher account" : "Your account",
     authTitle: screen === "twofa" ? (me?.user.role === "teacher" ? "Teaching Studio" : "Student Portal") : screen === "invite" || screen === "signup" ? "Welcome" : "Student Portal",

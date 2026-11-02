@@ -135,16 +135,16 @@ Lesson notes, drafts, video files and assignments for minors need row-level priv
 
 ## 3. Payments
 
-**Pay Now sends the customer their invoice link through GoHighLevel (owner's decision). It has not been run live.**
+**Pay Now emails the customer their invoice link through GoHighLevel. Invoice notifications from the portal are email-only (owner's decision). It has not been run live.**
 
-The live invoice response has no hosted payment URL, so the portal doesn't open checkout itself, and it never builds a URL from a pattern. `POST /api/invoices/:id/send-payment-link`, in order: authorizes the payer → confirms the invoice belongs to them and is live, with money due → refuses if a link went out in the last 10 minutes (from `audit_log`, so it holds across server instances) → calls `POST /invoices/{id}/send` with `action: "sms_and_email"` → records `invoice.link_sent`. GHL sends to the contact on the invoice. The browser can't supply a recipient.
+The live invoice response has no hosted payment URL, so the portal doesn't open checkout itself, and it never builds a URL from a pattern. `POST /api/invoices/:id/send-payment-link`, in order: authorizes the payer → confirms the invoice belongs to them and is live, with money due → refuses if a link went out in the last 10 minutes (from `audit_log`, so it holds across server instances) → calls `POST /invoices/{id}/send` with `action: "email"` → records `invoice.link_sent`. GHL sends to the contact on the invoice. The browser can't supply a recipient.
 
 **To enable, with the owner's approval only:** add the `invoices.write` scope to the token, and set `GHL_INVOICE_SENDER_USER_ID` to the GHL user invoices should be sent as. Until it's set, Pay Now returns `503 payment_link_unavailable` and sends nothing.
 
 **Test live on one owner-approved invoice, because this sends real messages:**
 - [ ] Does GHL accept a re-send of an invoice already in `sent` status, and does it change the invoice or its dates?
-- [ ] Do the email and text arrive with a working payment link, and is Stripe Link offered at checkout?
-- [ ] What happens when the contact has no phone or email? `sms_and_email` may be refused, or texting may need A2P registration.
+- [ ] Does the email arrive with a working payment link, with no text message sent, and is Stripe Link offered at checkout?
+- [ ] What happens when the contact has no email address?
 - [ ] Do GHL's own reminders or automations also fire?
 - [ ] After paying, does the portal show the invoice paid and unblock booking?
 
@@ -165,6 +165,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 - **Owner decision: 2FA is mandatory on every account** (teacher, family and individual student). Every protected API requires a verified factor and an `aal2` session, enforced in `assertSessionAllowed`. Only `GET /api/me` and invitation routes work without it, so that setup can start.
 - First sign-in sends anyone without a factor to required enrollment at `/verify`. The design's "Set this up later" isn't reachable, and "Turn off" in Security explains that 2FA is required. These controls remain in the views, inactive.
 - Password reset asks for the six-digit code before changing the password, so an email link alone can't get past 2FA.
+- **Forgotten password:** "Forgot your password?" on the sign-in page sends a Supabase reset email to `/reset-password`. Add each environment's `/reset-password` URL to Supabase Auth > URL Configuration > Redirect URLs, including Preview, or the link falls back to the Site URL.
 - **Lost phone:** there are no recovery codes. To restore access, an administrator verifies the person's identity outside the portal, then removes their factor in the Supabase dashboard (Authentication > Users). They re-enroll at next sign-in. Do this carefully: it's the main way to attack mandatory 2FA. Teacher tooling for it isn't built.
 - Roles come only from the `accounts` table. No route accepts a role from the browser except the teacher's invitation form, which allows only `guardian` or `student`.
 - Enrollment and verification use Supabase's `mfa.enroll` and `mfa.challengeAndVerify`. No code is checked in the browser.
