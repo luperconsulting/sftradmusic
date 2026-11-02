@@ -19,6 +19,14 @@ export function newEnrollmentCode() {
 
 export const newInviteToken = () => randomBytes(32).toString("base64url");
 
+/** Name stored for an invite. The teacher may leave it blank; the email still identifies the person. */
+export function inviteeFullName(name: string, email: string) {
+  const trimmed = name.trim();
+  if (trimmed) return trimmed;
+  const local = email.split("@")[0]?.replace(/[._+-]+/g, " ").trim();
+  return local || email;
+}
+
 /** Where Supabase sends the teacher’s invite after the recipient opens the email. Built only from this deployment's APP_URL. */
 export function portalInviteRedirect(appUrl: string, token: string) {
   return `${appUrl.replace(/\/$/, "")}/invite?token=${encodeURIComponent(token)}`;

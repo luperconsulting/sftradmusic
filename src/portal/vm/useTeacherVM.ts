@@ -324,10 +324,11 @@ export function useTeacherVM(screen: string): VM {
     const actions: [string, string, () => void][] = [];
     if (open_ && code) actions.push(["Copy code", "#1D2A44", () => { copy(code); flash(`Code ${code} copied.`); }]);
     if (open_ && link) actions.push(["Copy link", "#1D2A44", () => { copy(link); flash("Invitation link copied."); }]);
+    if (open_) actions.push(["Resend", "#1D2A44", guard(async () => { await api(`/teacher/invitations/${i.id}/resend`, { method: "POST" }); await refreshInvites(); flash(`A new invitation was emailed to ${i.email}. The previous link no longer works.`); })]);
     if (open_) actions.push(["Revoke", "#9C5F22", guard(async () => { await api(`/teacher/invitations/${i.id}/revoke`, { method: "POST" }); await refreshInvites(); flash("Invitation revoked."); })]);
     return {
       name: i.name, email: i.email, student: i.studentName, status: invLabel[i.status] ?? i.status, sColor: invColor[i.status] ?? "#1D2A44", code,
-      sent: `${fmt(i.sentAt, { month: "short", day: "numeric" })}${i.expiresAt && open_ ? ` · expires ${fmt(i.expiresAt, { month: "short", day: "numeric" })}` : ""}`,
+      sent: `${fmt(i.sentAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${i.expiresAt && open_ ? ` · expires ${fmt(i.expiresAt, { month: "short", day: "numeric" })}` : ""}`,
       actions: actions.map(([label, color, run]) => ({ label, color, run })),
     };
   });
@@ -541,20 +542,18 @@ export function useTeacherVM(screen: string): VM {
     isChild: !isAdult, isAdult, roleHint: isAdult ? "The student owns the account: they sign in, see their notes and pay their own invoices." : "The parent owns the account: they sign in, see notes and pay invoices. Siblings can share one login.",
     invEmail, setInvEmail: (e: any) => setInvEmail(e.target.value), invName, setInvName: (e: any) => setInvName(e.target.value), invStudentId, setInvStudent: (e: any) => chooseInvStudent(e.target.value, students),
     sendInvite: guard(async () => {
-      if (!invStudentId) return flash("Choose a student first.");
       const email = invEmail.trim();
       if (!email.includes("@")) return flash("Enter a valid email address.");
-      const stu = students.find((s) => s.id === invStudentId);
-      const name = isAdult ? stu?.fullName ?? "" : invName.trim();
-      if (!name) return flash("Enter the parent or guardian's name.");
-      const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: { method: invMethod, role: isAdult ? "student" : "guardian", email, name, studentIds: [invStudentId] } });
-      const shown = created.method === "code" ? created.credential! : created.inviteUrl!;
-      setIssued((m) => ({ ...m, [created.id]: shown }));
-      copy(shown);
+      const name = invName.trim();
+      const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: { email, ...(name ? { name } : {}) } });
+      if (created.inviteUrl) {
+        setIssued((m) => ({ ...m, [created.id]: created.inviteUrl! }));
+        copy(created.inviteUrl);
+      }
       setInvEmail("");
       setInvName("");
       await refreshInvites();
-      flash(created.method === "code" ? `Enrollment code ${shown} created and copied. Share it with the family. It's only shown this once.` : `Invitation emailed to ${email}. The link opens this site's invite page. A copy was also copied here, and it's only shown this once.`);
+      flash(`Invitation emailed to ${email}. The link opens this site's invite page. Nothing is created in GoHighLevel until they sign up.`);
     }),
     // Migrate
     migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),

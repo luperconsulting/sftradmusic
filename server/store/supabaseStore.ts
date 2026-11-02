@@ -308,8 +308,18 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async releaseInvitation(id) {
       must(await db.from("invitations").update({ status: "pending" }).eq("id", id));
     },
+    async getInvitation(id) {
+      const r = must(await db.from("invitations").select("*").eq("id", id).maybeSingle());
+      return r ? toInvitation(r) : null;
+    },
     async revokeInvitation(id) {
       must(await db.from("invitations").update({ status: "revoked" }).eq("id", id));
+    },
+    async revokePendingForEmail(email) {
+      must(await db.from("invitations").update({ status: "revoked" }).eq("email", email.toLowerCase()).eq("status", "pending"));
+    },
+    async deleteStudent(id) {
+      must(await db.from("students").delete().eq("id", id));
     },
     async attachInvitationAuthUser(id, authUserId) {
       const row = must(await db.from("invitations").select("preview").eq("id", id).single()) as { preview: Record<string, unknown> };

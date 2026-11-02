@@ -1,7 +1,7 @@
 import { studentFormError, studentFormMessages, type StudentFormat } from "../../shared/student-form.js";
 import { ApiError } from "../http.js";
 import type { GhlClient, GhlContact } from "../integrations/ghl.js";
-import type { StudentRecord } from "../store/types.js";
+import type { PortalStore, StudentRecord } from "../store/types.js";
 
 export interface NewStudent {
   fullName: string;
@@ -88,4 +88,44 @@ export async function resolveStudentContacts(ghl: GhlClient, students: StudentRe
     createdContactIds: [student, ...(billing ? [billing] : [])].filter((c) => c.created).map((c) => c.contact.id),
     contacts: { student: student.created ? "created" : "reused", billing: billing ? (billing.created ? "created" : "reused") : "same" },
   };
+}
+
+/**
+ * Creates the student row when an invitation is accepted. No contact is created before this.
+ * A failed insert deletes only contacts this call created and records them on the audit log.
+ */
+export async function enrollInvitedStudent(
+  ghl: GhlClient,
+  store: Pick<PortalStore, "checkStudentSchema" | "listStudents" | "createStudent" | "audit">,
+  input: { fullName: string; email: string },
+) {
+  await store.checkStudentSchema();
+  const details = {
+    fullName: input.fullName,
+    isMinor: false,
+    email: input.email,
+    guardianName: null,
+    guardianEmail: null,
+    format: "In person" as const,
+  };
+  const roster = await store.listStudents();
+  if (roster.some((s) => (s.email ?? "").toLowerCase() === input.email)) throw duplicateEmail();
+  const linked = await resolveStudentContacts(ghl, roster, details);
+  try {
+    const student = await store.createStudent({ ...details, ghlContactId: linked.ghlContactId, billingContactId: linked.billingContactId });
+    if (!student) throw new ApiError(409, "contact_already_linked", "That GoHighLevel contact is already linked to a student.");
+    return { student, createdContactIds: linked.createdContactIds };
+  } catch (e) {
+    if (linked.createdContactIds.length) {
+      for (const id of linked.createdContactIds) {
+        try {
+          await ghl.deleteContact(id);
+        } catch {
+          console.error(`[ghl] could not remove contact ${id} after the student record failed to save`);
+        }
+      }
+      await store.audit(null, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+    }
+    throw e;
+  }
 }

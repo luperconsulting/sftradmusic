@@ -1,4 +1,4 @@
-import { parseNewStudent, resolveStudentContacts } from "./services/students.js";
+import { parseNewStudent, resolveStudentContacts, enrollInvitedStudent } from "./services/students.js";
 import { studentFormMessages } from "../shared/student-form.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
@@ -11,7 +11,7 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
-import { assertPortalInviteEmail, hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken, portalInviteRedirect } from "./services/invitations.js";
+import { assertPortalInviteEmail, hashCredential, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInviteRedirect } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
 import type { AuthAdmin, PortalStore, StudentRecord } from "./store/types.js";
@@ -67,11 +67,11 @@ const assignmentSchema = z.object({
   studentIds: z.array(uuid).min(1).max(100),
 });
 const inviteSchema = z.object({
-  method: z.enum(["email", "code"]),
-  role: z.enum(["guardian", "student"]),
+  method: z.enum(["email", "code"]).optional(),
+  role: z.enum(["guardian", "student"]).optional(),
   email: z.string().trim().toLowerCase().email().max(200),
-  name: z.string().trim().min(1).max(120),
-  studentIds: z.array(uuid).min(1).max(10),
+  name: z.string().trim().max(120).optional(),
+  studentIds: z.array(uuid).max(10).optional(),
 });
 
 export function createApp(deps: Deps) {
@@ -205,12 +205,36 @@ export function createApp(deps: Deps) {
     const invite = await findLiveInvite(credential);
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
     let userId: string | null = null;
+    let createdStudentId: string | null = null;
+    let createdContactIds: string[] = [];
     try {
+      let studentIds = invite.studentIds;
+      // Invite-first: the student and the GoHighLevel contact do not exist until this sign-up.
+      if (studentIds.length === 0) {
+        const ghl = needGhl();
+        const enrolled = await enrollInvitedStudent(ghl, store, { fullName: inviteeFullName(invite.name, invite.email), email: invite.email });
+        createdStudentId = enrolled.student.id;
+        createdContactIds = enrolled.createdContactIds;
+        studentIds = [enrolled.student.id];
+      }
       userId = await auth.createUser(invite.email, pw, invite.preview.authUserId);
-      await store.createAccountForInvitation(invite, userId);
+      await store.createAccountForInvitation({ ...invite, studentIds }, userId);
     } catch (e) {
       // Undo the half-made login too. Otherwise a retry fails forever because the email is already taken.
       if (userId) await auth.deleteUser(userId).catch(() => console.error("[api] could not remove partial user"));
+      if (createdStudentId) {
+        await store.deleteStudent(createdStudentId).catch(() => console.error("[api] could not remove the student created for this invite"));
+        const ghl = deps.ghl;
+        if (ghl) {
+          for (const id of createdContactIds) {
+            try {
+              await ghl.deleteContact(id);
+            } catch {
+              console.error(`[ghl] could not remove contact ${id} after sign-up failed`);
+            }
+          }
+        }
+      }
       await store.releaseInvitation(invite.id);
       throw e;
     }
@@ -600,29 +624,30 @@ export function createApp(deps: Deps) {
   }));
 
   teacher.get("/invitations", wrap(async () => ({ invitations: await needStore().store.listInvitations() })));
-  teacher.post("/invitations", wrap(async (req) => {
-    const input = parse(inviteSchema, req.body);
+  const issueInvite = async (req: Request, input: { email: string; name: string; method: "email" | "code"; role: "guardian" | "student"; studentIds: string[] }) => {
     const { store, auth } = needStore();
-    const students = await store.getStudents(input.studentIds);
-    if (students.length !== input.studentIds.length) throw notFound("That student wasn't found.");
+    if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
+    const linked = input.studentIds.length ? await store.getStudents(input.studentIds) : [];
+    if (input.studentIds.length && linked.length !== input.studentIds.length) throw notFound("That student wasn't found.");
+    // A new code replaces any still-pending invite for this email, including a resend of the same row.
+    await store.revokePendingForEmail(input.email);
     const credential = input.method === "code" ? newEnrollmentCode() : newInviteToken();
     const inviteUrl = input.method === "email" ? portalInviteRedirect(config.appUrl, credential) : undefined;
-    if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
-    const first = students[0];
+    const fullName = inviteeFullName(input.name, input.email);
     const invite = await store.createInvitation({
       tokenHash: hashCredential(credential),
       method: input.method,
       email: input.email,
-      name: input.name,
+      name: input.name.trim() || fullName,
       role: input.role,
       studentIds: input.studentIds,
       expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
       preview: {
-        firstName: input.name.split(/\s+/)[0],
-        studentLine: students.map((s) => s.fullName).join(", "),
-        accountFor: `${input.name} · ${input.role === "guardian" ? "parent" : "student"}`,
-        lessons: first.styleLine,
-        format: first.format,
+        firstName: fullName.split(/\s+/)[0] || fullName,
+        studentLine: linked.length ? linked.map((s) => s.fullName).join(", ") : "Not enrolled yet",
+        accountFor: `${fullName} · ${input.role === "guardian" ? "parent" : "student"}`,
+        lessons: linked[0]?.styleLine ?? "",
+        format: linked[0]?.format ?? "In person",
       },
     });
     let emailed = false;
@@ -653,6 +678,24 @@ export function createApp(deps: Deps) {
       emailed,
       inviteUrl,
     };
+  };
+
+  teacher.post("/invitations", wrap(async (req) => {
+    const input = parse(inviteSchema, req.body);
+    return issueInvite(req, {
+      email: input.email,
+      name: input.name ?? "",
+      method: input.method ?? "email",
+      role: input.role ?? "student",
+      studentIds: input.studentIds ?? [],
+    });
+  }));
+  teacher.post("/invitations/:id/resend", wrap(async (req) => {
+    const { store } = needStore();
+    const existing = await store.getInvitation(parse(uuid, req.params.id));
+    if (!existing || existing.status === "revoked") throw notFound("That invitation wasn't found.");
+    if (existing.status !== "pending") throw new ApiError(409, "invitation_closed", "That invitation is no longer pending.");
+    return issueInvite(req, { email: existing.email, name: existing.name, method: existing.method, role: existing.role, studentIds: existing.studentIds });
   }));
   teacher.post("/invitations/:id/revoke", wrap(async (req) => {
     const id = parse(uuid, req.params.id);

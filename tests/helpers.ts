@@ -65,6 +65,9 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     checkStudentSchema: async () => undefined,
     attachInvitationAuthUser: async () => undefined,
     revokeInvitation: async () => undefined,
+    revokePendingForEmail: async () => undefined,
+    getInvitation: async () => null,
+    deleteStudent: async () => undefined,
     createInvitation: async (i: any) => ({ ...i, id: "inv", status: "pending" }),
     ...store,
   };

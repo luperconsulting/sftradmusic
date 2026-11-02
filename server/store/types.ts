@@ -109,9 +109,13 @@ export interface PortalStore {
   /** Atomically claims a pending, unexpired invitation. Returns false if it was already used. */
   claimInvitation(id: string): Promise<boolean>;
   releaseInvitation(id: string): Promise<void>;
+  getInvitation(id: string): Promise<InvitationRecord | null>;
   revokeInvitation(id: string): Promise<void>;
+  /** Pending invites for this email stop working. A resend calls this before issuing a new code. */
+  revokePendingForEmail(email: string): Promise<void>;
   /** Remembers the Supabase login created by an invite email. Not returned to the browser. */
   attachInvitationAuthUser(id: string, authUserId: string): Promise<void>;
+  deleteStudent(id: string): Promise<void>;
   createAccountForInvitation(invite: InvitationRecord, userId: string): Promise<void>;
   setAccountStatus(accountId: string, status: "active" | "suspended"): Promise<AccountRecord>;
   getAccount(accountId: string): Promise<AccountRecord | null>;
