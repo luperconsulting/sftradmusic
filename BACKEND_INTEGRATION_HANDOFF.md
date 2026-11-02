@@ -47,6 +47,7 @@ Set these in Vercel scoped to **Preview** first, so production is unaffected. **
 | `SUPABASE_ANON_KEY` | Optional | Not read by the server. No longer required. |
 | `GHL_PRIVATE_INTEGRATION_TOKEN`, `GHL_LOCATION_ID`, `GHL_LESSON_CALENDAR_ID` | Lessons, invoices | All three, or GHL stays "not configured" |
 | `GHL_TIMEZONE` | Optional | Defaults to `America/Los_Angeles` |
+| `GHL_INVOICE_SENDER_USER_ID` | Pay Now | GHL user invoices are sent as. Setting it lets Pay Now send real messages. |
 | `GHL_WEBHOOK_PUBLIC_KEY` | Optional | See Payments |
 
 `VITE_PORTAL_DEMO` must stay unset in Vercel (production builds ignore it regardless).
@@ -134,13 +135,20 @@ Lesson notes, drafts, video files and assignments for minors need row-level priv
 
 ## 3. Payments
 
-**This is the biggest open gap: Pay Now can't open a payment page yet.**
+**Pay Now sends the customer their invoice link through GoHighLevel (owner's decision). It has not been run live.**
 
-The live invoice response has no hosted payment URL, and neither does GHL's documented read API. The only documented routes change something: `POST /invoices/text2pay` returns a "preview url" but creates or updates an invoice, and `POST /invoices/{invoiceId}/send` sends the invoice to the customer, with undocumented `smsData` and `emailData` in its response. **Don't construct a URL from an observed pattern.** The portal's URL template setting has been removed for this reason.
+The live invoice response has no hosted payment URL, so the portal doesn't open checkout itself, and it never builds a URL from a pattern. `POST /api/invoices/:id/send-payment-link`, in order: authorizes the payer → confirms the invoice belongs to them and is live, with money due → refuses if a link went out in the last 10 minutes (from `audit_log`, so it holds across server instances) → calls `POST /invoices/{id}/send` with `action: "sms_and_email"` → records `invoice.link_sent`. GHL sends to the contact on the invoice. The browser can't supply a recipient.
 
-Today `POST /api/invoices/:id/payment-link` checks ownership and that the invoice is payable, then returns `503 payment_link_unavailable`. The customer is told to use the link in their invoice email or text. Balances, the booking block and status all work without it.
+**To enable, with the owner's approval only:** add the `invoices.write` scope to the token, and set `GHL_INVOICE_SENDER_USER_ID` to the GHL user invoices should be sent as. Until it's set, Pay Now returns `503 payment_link_unavailable` and sends nothing.
 
-**Recommended next step, needs the owner's approval:** change Pay Now to "send me my payment link", calling `/invoices/{id}/send`. It needs `invoices.write` and sends real messages, so test on one invoice first, and rate limit it to prevent duplicates.
+**Test live on one owner-approved invoice, because this sends real messages:**
+- [ ] Does GHL accept a re-send of an invoice already in `sent` status, and does it change the invoice or its dates?
+- [ ] Do the email and text arrive with a working payment link, and is Stripe Link offered at checkout?
+- [ ] What happens when the contact has no phone or email? `sms_and_email` may be refused, or texting may need A2P registration.
+- [ ] Do GHL's own reminders or automations also fire?
+- [ ] After paying, does the portal show the invoice paid and unblock booking?
+
+Two simultaneous clicks from different devices could each pass the 10-minute check, so a rare duplicate message is possible. A paid invoice can't be charged twice by this route, but confirm how a re-sent link behaves.
 
 Payment status is always read live from GHL, and the portal never writes it. The "Mark paid", "Remind", "Send" and "Void" actions return `501` by design. No Stripe webhook is needed for correct behavior.
 
@@ -196,7 +204,7 @@ Payment status is always read live from GHL, and the portal never writes it. The
 - **Keys:** new and legacy formats are recognized. A key in the wrong place is refused rather than used. `SUPABASE_ANON_KEY` is no longer required by the server.
 - **2FA is now mandatory on all accounts**, with a code step in password reset.
 - **Billing:** test-mode invoices no longer count toward a balance or appear in history.
-- **Payments:** removed `GHL_INVOICE_PAYMENT_URL_TEMPLATE` and `GHL_PAYMENT_LINK_HOSTS`. Delete them from Vercel if set.
+- **Payments:** removed `GHL_INVOICE_PAYMENT_URL_TEMPLATE` and `GHL_PAYMENT_LINK_HOSTS` (delete them from Vercel if set). Pay Now now sends the invoice link through GHL.
 - Added tests for all of the above and for `vercel.json` routing.
 
 ## API contract
@@ -212,7 +220,7 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 | `GET /api/lessons/slots?studentId&from&to` | family | Open times |
 | `POST /api/lessons` | family | Book, enforces the balance rule |
 | `POST /api/lessons/:eventId/reschedule` | family | Move a lesson, 24-hour rule |
-| `POST /api/invoices/:id/payment-link` | payer | Authorized payment URL |
+| `POST /api/invoices/:id/send-payment-link` | payer | GHL sends the invoice link. 10-minute limit. Returns `{ sent, invoiceId, amountDue }`. |
 | `GET /api/videos/:id/playback` | assigned family, teacher | Signed URL, 15 minutes |
 | `POST /api/videos/:id/watched` | family | Record watched |
 | `POST /api/assignments/:id/complete` | family | Completion tracking |
@@ -228,7 +236,7 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 ## Production blockers
 
 1. Portal has never run against live services. Auth accounts don't exist yet.
-2. **Pay Now can't open a payment page:** no supported read-only URL exists (see Payments).
+2. **Pay Now hasn't been tested live** and is off until the sender is configured and approved (see Payments).
 3. Calendar calls are unverified (see "Still to verify live"). Invoice reads are verified.
 4. No student mappings exist, and without them nobody has lessons or invoices.
 5. Owner review of the privacy notice and consent for minors' data.
@@ -257,7 +265,7 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 - [ ] Turn off public sign-ups, create the teacher, enroll 2FA and a backup device.
 - [ ] Complete "Test these live" above.
 - [x] Invoice API verified on Preview (version, dollars, contact filter, balance).
-- [ ] Owner decides Pay Now. Complete "Still to verify live".
+- [ ] Complete "Still to verify live" and the Pay Now live tests.
 - [ ] Add one test family and confirm: another family's data is refused, drafts are hidden, a balance blocks booking, paying unblocks it.
 - [ ] Confirm the CSP allows the real Supabase host and that video playback works.
 - [ ] Review the privacy notice and consent for storing minors' data with Supabase.

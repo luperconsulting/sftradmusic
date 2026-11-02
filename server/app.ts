@@ -7,7 +7,7 @@ import { ApiError, errorHandler, forbidden, notConfigured, notFound, parse, uuid
 import { memoryRateLimiter, type RateLimiter } from "./rateLimit.js";
 import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, canPayFor, type Actor } from "./auth/policy.js";
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
-import { getBilling, getInvoicePaymentLink, isOutstanding } from "./services/billing.js";
+import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
 import { hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
@@ -328,13 +328,16 @@ export function createApp(deps: Deps) {
     return { id: event.id, startTime: event.startTime ?? input.startTime };
   }));
 
-  app.post("/api/invoices/:invoiceId/payment-link", authenticate(), wrap(async (req) => {
+  app.post("/api/invoices/:invoiceId/send-payment-link", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
-    limiter.hit(`pay:${actor.accountId}`, 30, 15 * 60000);
+    limiter.hit(`pay:${actor.accountId}`, 5, 15 * 60000);
     const invoiceId = parse(z.string().min(1).max(100), req.params.invoiceId);
     const studentIds = actor.links.filter((l) => l.canPay).map((l) => l.studentId);
     const students = await needStore().store.getStudents(studentIds);
-    return getInvoicePaymentLink(needGhl(), students.map((s) => s.billingContactId), invoiceId);
+    const { store } = needStore();
+    const result = await sendInvoicePaymentLink(needGhl(), students.map((s) => s.billingContactId), invoiceId, (id) => store.lastInvoiceLinkSentAt(id));
+    await audit(req, "invoice.link_sent", result.invoiceId);
+    return result;
   }));
 
   app.get("/api/videos/:id/playback", authenticate(), wrap(async (req) => {

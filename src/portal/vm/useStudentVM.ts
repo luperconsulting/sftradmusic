@@ -172,17 +172,11 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     const target = selectedOpen ? selected : firstOpen;
     if (!target || paying) return;
     setPaying(true); // blocks a second request while the first is in flight
-    const tab = window.open("", "_blank"); // opened during the click so popup blockers allow it
     try {
-      const { url } = await api<{ url: string }>(`/invoices/${target.id}/payment-link`, { method: "POST" });
-      if (tab) {
-        tab.opener = null;
-        tab.location.href = url;
-      } else window.location.href = url;
+      await api(`/invoices/${target.id}/send-payment-link`, { method: "POST" });
       close();
-      flash("Opening secure checkout. Your balance updates here once the payment clears.");
+      flash("Your payment link is on its way to your email and phone. Your balance updates here once the payment clears.");
     } catch (err) {
-      tab?.close();
       flash(errorText(err));
     } finally {
       setPaying(false);

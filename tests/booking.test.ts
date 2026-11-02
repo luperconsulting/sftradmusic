@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { OUTSTANDING_BALANCE_MESSAGE } from "../shared/portal-types";
 import { createApp } from "../server/app";
+import { LINK_COOLDOWN_MS } from "../server/services/billing";
 import { buildDeps, fakeGhl, FUTURE, rawInvoice, STUDENT_A, STUDENT_B } from "./helpers";
 
 const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
@@ -90,23 +91,63 @@ describe("rescheduling", () => {
 });
 
 describe("payment links", () => {
-  const pay = (app: any) => request(app).post("/api/invoices/inv1/payment-link").set("Authorization", "Bearer parent");
+  const pay = (app: any) => request(app).post("/api/invoices/inv1/send-payment-link").set("Authorization", "Bearer parent").send({ email: "attacker@example.com" });
 
-  it("says plainly that no link is available for the payer's own unpaid invoice, and invents no URL", async () => {
-    const res = await pay(createApp(buildDeps({ parent })));
+  it("sends the payer's own unpaid invoice through GoHighLevel and records it", async () => {
+    const sendInvoice = vi.fn(async () => ({}));
+    const audit = vi.fn(async () => undefined);
+    const res = await pay(createApp(buildDeps({ parent }, fakeGhl({ sendInvoice }), { audit })));
+    expect(res.status).toBe(200);
+    expect(res.body.url).toBeUndefined();
+    // The recipient isn't in the call at all: GoHighLevel uses the contact on the invoice.
+    expect(sendInvoice).toHaveBeenCalledWith("inv1", { userId: "sender1", liveMode: true });
+    expect(audit).toHaveBeenCalledWith("parent", "invoice.link_sent", "inv1", undefined);
+  });
+
+  it("refuses another family's invoice and sends nothing", async () => {
+    const sendInvoice = vi.fn();
+    const ghl = fakeGhl({ sendInvoice, getInvoice: async () => rawInvoice({ contactDetails: { id: "payerB" } }) });
+    expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(403);
+    expect(sendInvoice).not.toHaveBeenCalled();
+  });
+
+  it.each([["paid", { status: "paid", amountDue: 0 }], ["draft", { status: "draft" }], ["void", { status: "void" }], ["test-mode", { liveMode: false }]])("won't send a %s invoice", async (_n, over) => {
+    const sendInvoice = vi.fn();
+    const ghl = fakeGhl({ sendInvoice, getInvoice: async () => rawInvoice(over) });
+    expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(409);
+    expect(sendInvoice).not.toHaveBeenCalled();
+  });
+
+  it("won't send twice within the cooldown", async () => {
+    const sendInvoice = vi.fn();
+    const deps = buildDeps({ parent }, fakeGhl({ sendInvoice }), { lastInvoiceLinkSentAt: async () => new Date(Date.now() - 60000).toISOString() });
+    const res = await pay(createApp(deps));
+    expect(res.status).toBe(429);
+    expect(res.body.error.code).toBe("link_recently_sent");
+    expect(sendInvoice).not.toHaveBeenCalled();
+  });
+
+  it("sends again after the cooldown", async () => {
+    const deps = buildDeps({ parent }, fakeGhl(), { lastInvoiceLinkSentAt: async () => new Date(Date.now() - LINK_COOLDOWN_MS - 1000).toISOString() });
+    expect((await pay(createApp(deps))).status).toBe(200);
+  });
+
+  it("says so and sends nothing when no sender is configured", async () => {
+    const sendInvoice = vi.fn();
+    const base = fakeGhl({ sendInvoice });
+    const ghl = { ...base, config: { ...base.config, invoiceSenderUserId: null } };
+    const res = await pay(createApp(buildDeps({ parent }, ghl)));
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe("payment_link_unavailable");
-    expect(res.body.url).toBeUndefined();
+    expect(sendInvoice).not.toHaveBeenCalled();
   });
 
-  it("refuses another family's invoice", async () => {
-    const ghl = fakeGhl({ getInvoice: async () => rawInvoice({ contactDetails: { id: "payerB" } }) });
-    expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(403);
-  });
-
-  it("won't return a link for a paid invoice", async () => {
-    const ghl = fakeGhl({ getInvoice: async () => rawInvoice({ status: "paid", amountDue: 0 }) });
-    expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(409);
+  it("doesn't let a teacher or a non-paying account send", async () => {
+    const sendInvoice = vi.fn();
+    const viewer = { role: "student" as const, links: [{ studentId: STUDENT_A, canBook: false, canPay: false }] };
+    const res = await request(createApp(buildDeps({ viewer }, fakeGhl({ sendInvoice })))).post("/api/invoices/inv1/send-payment-link").set("Authorization", "Bearer viewer");
+    expect(res.status).toBe(403);
+    expect(sendInvoice).not.toHaveBeenCalled();
   });
 
   it("keeps a bad-actor booking for another student out", async () => {

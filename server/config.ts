@@ -10,6 +10,7 @@ export interface ServerConfig {
     locationId: string;
     lessonCalendarId: string;
     timezone: string;
+    invoiceSenderUserId: string | null;
   } | null;
   ghlWebhookPublicKey: string | null;
   videoBucket: string;
@@ -40,6 +41,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
             locationId,
             lessonCalendarId: calendarId,
             timezone: env.GHL_TIMEZONE || "America/Los_Angeles",
+            invoiceSenderUserId: env.GHL_INVOICE_SENDER_USER_ID || null,
           }
         : null,
     ghlWebhookPublicKey: env.GHL_WEBHOOK_PUBLIC_KEY || null,

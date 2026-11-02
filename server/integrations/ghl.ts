@@ -12,6 +12,8 @@ export interface GhlConfig {
   locationId: string;
   lessonCalendarId: string;
   timezone: string;
+  /** The GoHighLevel user invoices are sent as. Without one, the portal can't send payment links. */
+  invoiceSenderUserId: string | null;
 }
 
 export interface GhlAppointment {
@@ -35,6 +37,8 @@ export interface GhlClient {
   listCalendarEvents(fromMs: number, toMs: number): Promise<GhlAppointment[]>;
   listInvoices(query: { contactId?: string; limit?: number; offset?: number }): Promise<{ invoices: any[]; total: number }>;
   getInvoice(invoiceId: string): Promise<any>;
+  /** Sends an existing invoice to the contact it's addressed to. This delivers real messages. */
+  sendInvoice(invoiceId: string, input: { userId: string; liveMode: boolean }): Promise<unknown>;
 }
 
 export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fetch): GhlClient {
@@ -116,6 +120,11 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
       return { invoices: data.invoices ?? [], total: data.total ?? 0 };
     },
     getInvoice: (invoiceId) => call(`/invoices/${encodeURIComponent(invoiceId)}?${invoiceQuery({})}`, CRM_VERSION),
+    sendInvoice: (invoiceId, input) =>
+      call(`/invoices/${encodeURIComponent(invoiceId)}/send`, CRM_VERSION, {
+        method: "POST",
+        body: JSON.stringify({ altId: config.locationId, altType: "location", userId: input.userId, action: "sms_and_email", liveMode: input.liveMode }),
+      }),
   };
 }
 

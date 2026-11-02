@@ -108,6 +108,8 @@ export interface PortalStore {
   setAccountStatus(accountId: string, status: "active" | "suspended"): Promise<AccountRecord>;
   getAccount(accountId: string): Promise<AccountRecord | null>;
 
+  /** When a payment link was last sent, from the audit log, so the limit holds across server instances. */
+  lastInvoiceLinkSentAt(invoiceId: string): Promise<string | null>;
   audit(actorAccountId: string | null, action: string, target: string, meta?: Record<string, unknown>): Promise<void>;
 }
 

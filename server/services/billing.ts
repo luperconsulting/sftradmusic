@@ -33,14 +33,30 @@ export async function getBilling(ghl: GhlClient, payerContactId: string): Promis
   };
 }
 
+export const LINK_COOLDOWN_MS = 10 * 60 * 1000;
+
 /**
- * Pay Now's server side. Verified against the live API: invoice responses contain no hosted payment URL, and no
- * read-only endpoint provides one. So this checks ownership and payability, then says so plainly. A URL is never
- * built from a guessed pattern.
+ * Pay Now's server side. Live invoice responses have no hosted payment URL, so GoHighLevel sends its own invoice,
+ * with its own payment link, to the contact on the invoice. No URL is built here, and no recipient comes from the
+ * browser. Payment status is never changed.
  */
-export async function getInvoicePaymentLink(ghl: GhlClient, payerContactIds: string[], invoiceId: string) {
+export async function sendInvoicePaymentLink(
+  ghl: GhlClient,
+  payerContactIds: string[],
+  invoiceId: string,
+  lastSentAt: (invoiceId: string) => Promise<string | null>,
+) {
   const invoice = toInvoiceDTO(await ghl.getInvoice(invoiceId));
   if (!payerContactIds.includes(invoice.contactId)) throw forbidden();
   if (!isOutstanding(invoice)) throw new ApiError(409, "invoice_not_payable", "This invoice has nothing left to pay.");
-  throw new ApiError(503, "payment_link_unavailable", "Paying from the portal isn't available yet. Please use the payment link in your invoice email or text, or contact Zane.");
+  const senderId = ghl.config.invoiceSenderUserId;
+  if (!senderId) {
+    throw new ApiError(503, "payment_link_unavailable", "Paying from the portal isn't available yet. Please use the payment link in your invoice email or text, or contact Zane.");
+  }
+  const last = await lastSentAt(invoice.id);
+  if (last && Date.now() - new Date(last).getTime() < LINK_COOLDOWN_MS) {
+    throw new ApiError(429, "link_recently_sent", "We just sent your payment link. Please check your email and texts.");
+  }
+  await ghl.sendInvoice(invoice.id, { userId: senderId, liveMode: invoice.liveMode !== false });
+  return { sent: true, invoiceId: invoice.id, amountDue: invoice.amountDue };
 }

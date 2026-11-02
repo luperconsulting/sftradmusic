@@ -291,6 +291,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async setAccountStatus(accountId, status) {
       return toAccount(must(await db.from("accounts").update({ status }).eq("id", accountId).select().single()));
     },
+    async lastInvoiceLinkSentAt(invoiceId) {
+      const rows = must(await db.from("audit_log").select("created_at").eq("action", "invoice.link_sent").eq("target", invoiceId).order("created_at", { ascending: false }).limit(1)) as any[];
+      return rows[0]?.created_at ?? null;
+    },
     async audit(actor, action, target, meta = {}) {
       must(await db.from("audit_log").insert({ actor_account_id: actor, action, target, meta }));
     },

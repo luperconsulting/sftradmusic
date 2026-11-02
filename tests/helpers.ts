@@ -19,7 +19,7 @@ export const rawInvoice = (over: Record<string, unknown> = {}) => ({
 
 export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
   return {
-    config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC" },
+    config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", invoiceSenderUserId: "sender1" },
     getFreeSlots: async () => ({ d: [FUTURE] }),
     createAppointment: async (i) => ({ id: "new", calendarId: "cal", contactId: i.contactId, startTime: i.startTime, endTime: i.endTime }),
     updateAppointment: async (id, i) => ({ id, calendarId: "cal", contactId: "contactA", startTime: i.startTime, endTime: i.endTime }),
@@ -28,6 +28,7 @@ export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
     listCalendarEvents: async () => [],
     listInvoices: async () => ({ invoices: [], total: 0 }),
     getInvoice: async () => rawInvoice(),
+    sendInvoice: async () => ({}),
     ...over,
   };
 }
@@ -54,6 +55,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     listAssignedVideos: async () => [],
     listAssignments: async () => [],
     audit: async () => undefined,
+    lastInvoiceLinkSentAt: async () => null,
     ...store,
   };
   return {
