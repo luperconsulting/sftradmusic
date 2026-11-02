@@ -33,6 +33,7 @@ export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
     createContact: async ({ name, email }) => ({ contact: { id: `new-${name}`, name, email }, created: true }),
     searchContacts: async () => [],
     getContact: async (id) => ({ id, name: "Contact", email: null }),
+    deleteContact: async () => undefined,
     ...over,
   };
 }
@@ -47,6 +48,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
   const auth: Partial<AuthAdmin> = {
     verifyToken: async (token) => (users[token] ? { userId: token, email: `${token}@example.com`, aal: users[token].aal ?? "aal2", mfaEnrolled: users[token].mfa ?? true } : null),
     sendPasswordReset: async () => undefined,
+    sendPortalInvite: async () => "invited-user",
     setBanned: async () => undefined,
   };
   const fullStore: Partial<PortalStore> = {
@@ -61,10 +63,13 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     audit: async () => undefined,
     lastInvoiceLinkSentAt: async () => null,
     checkStudentSchema: async () => undefined,
+    attachInvitationAuthUser: async () => undefined,
+    revokeInvitation: async () => undefined,
+    createInvitation: async (i: any) => ({ ...i, id: "inv", status: "pending" }),
     ...store,
   };
   return {
-    config: { appUrl: "https://app.example.com", supabase: null, ghl: null, ghlWebhookPublicKey: null, videoBucket: "b", features: { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false } },
+    config: { appUrl: "https://app.example.com", supabase: null, ghl: null, ghlWebhookPublicKey: null, safeMode: false, safeModeEmailAllowlist: ["luperdev@gmail.com"], videoBucket: "b", features: { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false } },
     store: fullStore as PortalStore,
     auth: auth as AuthAdmin,
     ghl,

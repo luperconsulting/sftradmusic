@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomInt, timingSafeEqual } from "node:crypto";
+import { ApiError } from "../http.js";
 
 const ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 export const INVITE_TTL_MS = 7 * 24 * 3600 * 1000;
@@ -17,6 +18,21 @@ export function newEnrollmentCode() {
 }
 
 export const newInviteToken = () => randomBytes(32).toString("base64url");
+
+/** Where Supabase sends the teacher’s invite after the recipient opens the email. Built only from this deployment's APP_URL. */
+export function portalInviteRedirect(appUrl: string, token: string) {
+  return `${appUrl.replace(/\/$/, "")}/invite?token=${encodeURIComponent(token)}`;
+}
+
+/**
+ * Safe mode limits who may be emailed a portal invitation. It does not apply to enrollment codes,
+ * and it never applies to GoHighLevel. When safe mode is off, every address may be emailed.
+ */
+export function assertPortalInviteEmail(safeMode: boolean, email: string, allowlist: string[]) {
+  if (!safeMode) return;
+  if (allowlist.includes(email.trim().toLowerCase())) return;
+  throw new ApiError(403, "invite_not_allowed", "Safe mode only emails portal invitations to addresses on SAFE_MODE_EMAIL_ALLOWLIST.");
+}
 
 export function hashesMatch(a: string, b: string) {
   const x = Buffer.from(a, "hex");

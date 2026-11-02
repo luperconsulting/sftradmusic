@@ -7,6 +7,7 @@ import type {
   StudentSummary,
   VideoDTO,
 } from "../../shared/portal-types.js";
+import type { StudentFormat } from "../../shared/student-form.js";
 import type { StudentLink } from "../auth/policy.js";
 
 export interface AccountRecord {
@@ -35,7 +36,7 @@ export interface InvitationRecord {
   studentIds: string[];
   status: "pending" | "accepted" | "revoked";
   expiresAt: string;
-  preview: { lessons: string; format: string; studentLine: string; accountFor: string; firstName: string };
+  preview: { lessons: string; format: string; studentLine: string; accountFor: string; firstName: string; authUserId?: string };
 }
 
 export interface NoteInput {
@@ -76,7 +77,7 @@ export interface PortalStore {
   /** Throws if the database can't hold a new student yet, before any outside system is touched. */
   checkStudentSchema(): Promise<void>;
   /** Null when the GoHighLevel contact is already linked to another student. */
-  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
+  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; format: StudentFormat; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
   studentCounts(): Promise<Record<string, { notes: number; videos: number; assignments: number }>>;
   studentAccounts(): Promise<Record<string, { accountId: string; status: "active" | "suspended" }>>;
 
@@ -109,6 +110,8 @@ export interface PortalStore {
   claimInvitation(id: string): Promise<boolean>;
   releaseInvitation(id: string): Promise<void>;
   revokeInvitation(id: string): Promise<void>;
+  /** Remembers the Supabase login created by an invite email. Not returned to the browser. */
+  attachInvitationAuthUser(id: string, authUserId: string): Promise<void>;
   createAccountForInvitation(invite: InvitationRecord, userId: string): Promise<void>;
   setAccountStatus(accountId: string, status: "active" | "suspended"): Promise<AccountRecord>;
   getAccount(accountId: string): Promise<AccountRecord | null>;
@@ -121,8 +124,14 @@ export interface PortalStore {
 export interface AuthAdmin {
   /** Validates a Supabase access token with Supabase. Returns null for anything invalid or expired. */
   verifyToken(token: string): Promise<{ userId: string; email: string; aal: string; mfaEnrolled: boolean } | null>;
-  createUser(email: string, password: string): Promise<string>;
+  createUser(email: string, password: string, existingUserId?: string | null): Promise<string>;
   deleteUser(userId: string): Promise<void>;
+  /**
+   * Emails a Supabase invite. If that address already has a login, emails a magic link instead.
+   * Returns the new user's id, or null when a magic link was sent to an existing login.
+   * redirectTo must be this deployment's own invite URL.
+   */
+  sendPortalInvite(email: string, redirectTo: string): Promise<string | null>;
   sendPasswordReset(email: string): Promise<void>;
   setBanned(userId: string, banned: boolean): Promise<void>;
 }

@@ -1,4 +1,5 @@
-import { resolveStudentContacts } from "./services/students.js";
+import { parseNewStudent, resolveStudentContacts } from "./services/students.js";
+import { studentFormMessages } from "../shared/student-form.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -10,7 +11,7 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
-import { hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken } from "./services/invitations.js";
+import { assertPortalInviteEmail, hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken, portalInviteRedirect } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
 import type { AuthAdmin, PortalStore, StudentRecord } from "./store/types.js";
@@ -71,18 +72,6 @@ const inviteSchema = z.object({
   email: z.string().trim().toLowerCase().email().max(200),
   name: z.string().trim().min(1).max(120),
   studentIds: z.array(uuid).min(1).max(10),
-});
-
-const optionalEmail = z.string().trim().toLowerCase().email().max(200).or(z.literal("")).optional();
-const studentSchema = z.object({
-  fullName: z.string().trim().min(1).max(120),
-  ageCategory: z.enum(["child", "adult"]),
-  email: optionalEmail,
-  guardianName: z.string().trim().max(120).optional(),
-  guardianEmail: optionalEmail,
-  // Set when importing an existing contact. Otherwise the contacts are created.
-  ghlContactId: z.string().trim().min(1).max(100).optional(),
-  billingContactId: z.string().trim().min(1).max(100).optional(),
 });
 
 export function createApp(deps: Deps) {
@@ -196,7 +185,16 @@ export function createApp(deps: Deps) {
     limiter.hit(`invite-verify:${clientKey(req)}`, 10, 15 * 60000);
     const { credential } = parse(z.object({ credential: z.string().trim().min(8).max(200) }), req.body);
     const invite = await findLiveInvite(credential);
-    const preview: InvitationPreview = { ...invite.preview, email: invite.email, expiresAt: invite.expiresAt };
+    // Listed field by field so a server-only auth user id stored on the row never reaches the browser.
+    const preview: InvitationPreview = {
+      firstName: invite.preview.firstName,
+      studentLine: invite.preview.studentLine,
+      accountFor: invite.preview.accountFor,
+      lessons: invite.preview.lessons,
+      format: invite.preview.format,
+      email: invite.email,
+      expiresAt: invite.expiresAt,
+    };
     return preview;
   }));
 
@@ -208,7 +206,7 @@ export function createApp(deps: Deps) {
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
     let userId: string | null = null;
     try {
-      userId = await auth.createUser(invite.email, pw);
+      userId = await auth.createUser(invite.email, pw, invite.preview.authUserId);
       await store.createAccountForInvitation(invite, userId);
     } catch (e) {
       // Undo the half-made login too. Otherwise a retry fails forever because the email is already taken.
@@ -428,20 +426,21 @@ export function createApp(deps: Deps) {
     return { contacts: contacts.map((c) => ({ ...c, studentName: linked.get(c.id) ?? null })) };
   }));
   teacher.post("/students", wrap(async (req) => {
-    const input = parse(studentSchema, req.body);
-    const isMinor = input.ageCategory === "child";
-    if (!isMinor && !input.email) throw new ApiError(400, "invalid_input", "Enter the student's email address.");
-    if (isMinor && !input.guardianName) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's name.");
-    if (isMinor && !input.guardianEmail) throw new ApiError(400, "invalid_input", "Enter the parent or guardian's email address.");
+    const input = parseNewStudent(req.body);
     const ghl = needGhl();
     const { store } = needStore();
     await store.checkStudentSchema();
+    const roster = await store.listStudents();
+    if (input.email && roster.some((s) => (s.email ?? "").toLowerCase() === input.email)) {
+      throw new ApiError(409, "student_already_exists", studentFormMessages.duplicateEmail);
+    }
     const details = {
       fullName: input.fullName,
-      isMinor,
-      email: input.email || null,
-      guardianName: isMinor ? input.guardianName! : null,
-      guardianEmail: isMinor ? input.guardianEmail! : null,
+      isMinor: input.isMinor,
+      email: input.email,
+      guardianName: input.guardianName,
+      guardianEmail: input.guardianEmail,
+      format: input.format,
     };
     let linked: { ghlContactId: string; billingContactId: string; createdContactIds: string[]; contacts?: Record<string, string> };
     if (input.ghlContactId) {
@@ -454,14 +453,23 @@ export function createApp(deps: Deps) {
         });
       }
     } else {
-      linked = await resolveStudentContacts(ghl, await store.listStudents(), details);
+      linked = await resolveStudentContacts(ghl, roster, details);
     }
     let student;
     try {
       student = await store.createStudent({ ...details, ghlContactId: linked.ghlContactId, billingContactId: linked.billingContactId });
     } catch (e) {
-      // Keeps a record of contacts GoHighLevel now has with no student attached.
-      if (linked.createdContactIds.length) await audit(req, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+      // A failed insert must not leave contacts this request created. Reused contacts stay.
+      if (linked.createdContactIds.length) {
+        for (const id of linked.createdContactIds) {
+          try {
+            await ghl.deleteContact(id);
+          } catch {
+            console.error(`[ghl] could not remove contact ${id} after the student record failed to save`);
+          }
+        }
+        await audit(req, "student.create_failed", "", { createdContactIds: linked.createdContactIds }).catch(() => undefined);
+      }
       throw e;
     }
     if (!student) throw new ApiError(409, "contact_already_linked", "That GoHighLevel contact is already linked to a student.");
@@ -594,10 +602,12 @@ export function createApp(deps: Deps) {
   teacher.get("/invitations", wrap(async () => ({ invitations: await needStore().store.listInvitations() })));
   teacher.post("/invitations", wrap(async (req) => {
     const input = parse(inviteSchema, req.body);
-    const { store } = needStore();
+    const { store, auth } = needStore();
     const students = await store.getStudents(input.studentIds);
     if (students.length !== input.studentIds.length) throw notFound("That student wasn't found.");
     const credential = input.method === "code" ? newEnrollmentCode() : newInviteToken();
+    const inviteUrl = input.method === "email" ? portalInviteRedirect(config.appUrl, credential) : undefined;
+    if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
     const first = students[0];
     const invite = await store.createInvitation({
       tokenHash: hashCredential(credential),
@@ -615,8 +625,20 @@ export function createApp(deps: Deps) {
         format: first.format,
       },
     });
-    await audit(req, "invitation.create", invite.id, { method: input.method });
-    // The plain credential is returned once and never stored.
+    let emailed = false;
+    if (inviteUrl) {
+      try {
+        const authUserId = await auth.sendPortalInvite(input.email, inviteUrl);
+        if (authUserId) await store.attachInvitationAuthUser(invite.id, authUserId).catch(() => undefined);
+        emailed = true;
+      } catch (e) {
+        await store.revokeInvitation(invite.id).catch(() => undefined);
+        if (e instanceof ApiError) throw e;
+        throw new ApiError(503, "invite_email_failed", "The invitation email wasn't sent. Please try again.");
+      }
+    }
+    await audit(req, "invitation.create", invite.id, { method: input.method, emailed });
+    // The plain credential is returned once and never stored. The email itself is sent by Supabase, not GoHighLevel.
     return {
       id: invite.id,
       name: invite.name,
@@ -628,7 +650,8 @@ export function createApp(deps: Deps) {
       expiresAt: invite.expiresAt,
       accountId: null,
       credential,
-      inviteUrl: input.method === "email" ? `${config.appUrl}/invite?token=${encodeURIComponent(credential)}` : undefined,
+      emailed,
+      inviteUrl,
     };
   }));
   teacher.post("/invitations/:id/revoke", wrap(async (req) => {

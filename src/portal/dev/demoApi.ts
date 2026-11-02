@@ -43,13 +43,13 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/ghl/contacts") return { contacts: sampleContacts.map((c) => ({ ...c, studentName: addedStudents.find((s) => s.ghlContactId === c.id)?.fullName ?? null })) };
   if (p === "/teacher/students" && opts.method === "POST") {
     const b = opts.body as any;
-    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId ?? crypto.randomUUID() };
+    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), format: b.format === "Zoom" ? "Zoom" as const : "In person" as const, email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId ?? crypto.randomUUID() };
     addedStudents.push(s);
     return { student: { id: s.id, fullName: s.fullName }, contacts: b.ghlContactId ? null : { student: "created", billing: b.ageCategory === "child" ? "created" : "same" } };
   }
   if (p === "/teacher/invitations" && opts.method === "POST") {
     const b = opts.body as any;
-    return { id: crypto.randomUUID(), name: b.name, email: b.email, studentName: "", status: b.method === "code" ? "code_issued" : "pending", method: b.method, credential: "SFTM-SAMP-LE00", inviteUrl: "http://localhost:3000/invite?token=sample" };
+    return { id: crypto.randomUUID(), name: b.name, email: b.email, studentName: "", status: b.method === "code" ? "code_issued" : "pending", method: b.method, credential: "SFTM-SAMP-LE00", emailed: b.method === "email", inviteUrl: b.method === "email" ? "http://localhost:3000/invite?token=sample" : undefined };
   }
   if (p === "/me") {
     const teacher = isTeacherPath();
