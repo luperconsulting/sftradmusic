@@ -47,7 +47,6 @@ Set these in Vercel scoped to **Preview** first, so production is unaffected. **
 | `SUPABASE_ANON_KEY` | Optional | Not read by the server. No longer required. |
 | `GHL_PRIVATE_INTEGRATION_TOKEN`, `GHL_LOCATION_ID`, `GHL_LESSON_CALENDAR_ID` | Lessons, invoices | All three, or GHL stays "not configured" |
 | `GHL_TIMEZONE` | Optional | Defaults to `America/Los_Angeles` |
-| `GHL_INVOICE_PAYMENT_URL_TEMPLATE`, `GHL_PAYMENT_LINK_HOSTS` | Pay Now | See Payments |
 | `GHL_WEBHOOK_PUBLIC_KEY` | Optional | See Payments |
 
 `VITE_PORTAL_DEMO` must stay unset in Vercel (production builds ignore it regardless).
@@ -87,7 +86,7 @@ Effect: an anon-role query on a table whose policy calls these functions now get
 ## 2. GoHighLevel
 
 Create a **Private Integration Token** for the sub-account with these scopes, and set `GHL_PRIVATE_INTEGRATION_TOKEN`, `GHL_LOCATION_ID`, `GHL_LESSON_CALENDAR_ID`:
-`calendars.readonly`, `calendars/events.readonly`, `calendars/events.write`, `contacts.readonly`, `invoices.readonly`.
+`calendars.readonly`, `calendars/events.readonly`, `calendars/events.write`, `contacts.readonly`, `invoices.readonly`. Invoice reads are confirmed working on Preview; the calendar and contact scopes are not yet.
 
 Do not touch the Free Intro Call widget (`vc5JhcEjhKFs3MpJyj9p`). The portal only uses the student lesson calendar.
 
@@ -102,13 +101,24 @@ Do not touch the Free Intro Call widget (`vc5JhcEjhKFs3MpJyj9p`). The portal onl
 | `listInvoices` | `GET /invoices/?altId&altType=location&contactId&limit&offset` | 2021-07-28 |
 | `getInvoice` | `GET /invoices/{invoiceId}` | 2021-07-28 |
 
-### Verify first, against the live API
+### Verified against the live API
 
-- [ ] Are invoice `total` and `amountDue` in dollars or cents? The code assumes dollars. A wrong assumption shows wrong amounts.
-- [ ] Does `GET /invoices/` really filter by `contactId`? The code also re-checks ownership on every row.
-- [ ] What status does an overdue invoice report? The spec lists `draft, sent, payment_processing, paid, void, partially_paid`. Anything else with money due blocks booking.
+Read-only GET requests from a Preview deployment, on 2026-11-01, using the known $100 invoice. No invoice was changed.
+
+| Question | Result |
+|---|---|
+| `Version` header | `2021-07-28` returns 200, `v3` returns 200, missing returns 401. The code uses `2021-07-28`, the only value in the OpenAPI file. |
+| Dollars or cents | **Dollars.** `total`, `amountDue` and the item `amount` are all `100` on the $100 invoice. Only a whole-dollar amount was checked. |
+| `contactId` filter | **Works.** Returned 1 invoice, 0 for other contacts, while the unfiltered list had another contact's invoice. A nonexistent contact returns 200 with 0 rows. The per-row ownership check stays anyway. |
+| Hosted payment URL | **Not present** in the invoice response. No URL values or link-named fields. |
+| Portal billing code | **Correct.** Outstanding 100, 1 open invoice, booking blocked. The other contact's paid invoice was excluded. |
+
+### Still to verify live
+
+- [ ] What status does an overdue invoice report? The tested invoice was `sent`, and the spec lists `draft, sent, payment_processing, paid, void, partially_paid`. Anything else with money due blocks booking.
 - [ ] Does `getAppointment` wrap its result in `event`? The code accepts both shapes.
 - [ ] `toLessonDTO` detects Zoom from the appointment's address or title. Confirm how Zoom lessons are stored, and whether cancelled ones appear in `appointmentStatus`.
+- [ ] Free slots, booking and rescheduling haven't been called live. Booking would create a real appointment, so use a test contact and get the owner's approval.
 
 ### Student mappings (required)
 
@@ -124,13 +134,13 @@ Lesson notes, drafts, video files and assignments for minors need row-level priv
 
 ## 3. Payments
 
-**This is the biggest open gap.** GHL's invoice API has no hosted payment URL field. `Text2PayInvoiceResponseDto.invoiceUrl` exists, but that call creates a new invoice, so it isn't usable here.
+**This is the biggest open gap: Pay Now can't open a payment page yet.**
 
-1. Open a real test invoice's payment page and confirm whether its URL follows a stable pattern from the invoice ID.
-2. If so, set `GHL_INVOICE_PAYMENT_URL_TEMPLATE="https://HOST/PATH/{invoiceId}"` and `GHL_PAYMENT_LINK_HOSTS="HOST"`.
-3. If not, the fallback is sending the invoice through `POST /invoices/{invoiceId}/send`, which needs `invoices.write` and a change to `getInvoicePaymentLink`.
+The live invoice response has no hosted payment URL, and neither does GHL's documented read API. The only documented routes change something: `POST /invoices/text2pay` returns a "preview url" but creates or updates an invoice, and `POST /invoices/{invoiceId}/send` sends the invoice to the customer, with undocumented `smsData` and `emailData` in its response. **Don't construct a URL from an observed pattern.** The portal's URL template setting has been removed for this reason.
 
-Until then **Pay Now returns 503 and the button shows that message.** Stripe Link availability is controlled by the checkout GHL opens; nothing in the portal can turn it on.
+Today `POST /api/invoices/:id/payment-link` checks ownership and that the invoice is payable, then returns `503 payment_link_unavailable`. The customer is told to use the link in their invoice email or text. Balances, the booking block and status all work without it.
+
+**Recommended next step, needs the owner's approval:** change Pay Now to "send me my payment link", calling `/invoices/{id}/send`. It needs `invoices.write` and sends real messages, so test on one invoice first, and rate limit it to prevent duplicates.
 
 Payment status is always read live from GHL, and the portal never writes it. The "Mark paid", "Remind", "Send" and "Void" actions return `501` by design. No Stripe webhook is needed for correct behavior.
 
@@ -185,6 +195,8 @@ Payment status is always read live from GHL, and the portal never writes it. The
 - **Teacher preview:** can't mark assignments complete.
 - **Keys:** new and legacy formats are recognized. A key in the wrong place is refused rather than used. `SUPABASE_ANON_KEY` is no longer required by the server.
 - **2FA is now mandatory on all accounts**, with a code step in password reset.
+- **Billing:** test-mode invoices no longer count toward a balance or appear in history.
+- **Payments:** removed `GHL_INVOICE_PAYMENT_URL_TEMPLATE` and `GHL_PAYMENT_LINK_HOSTS`. Delete them from Vercel if set.
 - Added tests for all of the above and for `vercel.json` routing.
 
 ## API contract
@@ -216,8 +228,8 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 ## Production blockers
 
 1. Portal has never run against live services. Auth accounts don't exist yet.
-2. **Pay Now has no confirmed payment URL** (see Payments).
-3. GHL "Verify first" list is unanswered, including dollars versus cents, which affects the balance rule's displayed amounts.
+2. **Pay Now can't open a payment page:** no supported read-only URL exists (see Payments).
+3. Calendar calls are unverified (see "Still to verify live"). Invoice reads are verified.
 4. No student mappings exist, and without them nobody has lessons or invoices.
 5. Owner review of the privacy notice and consent for minors' data.
 6. Families can't yet see or complete practice assignments in the UI. The backend exists, but `/portal/assignments` goes to the videos section.
@@ -244,7 +256,8 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 - [ ] Set all environment variables in Vercel, Preview first, then redeploy.
 - [ ] Turn off public sign-ups, create the teacher, enroll 2FA and a backup device.
 - [ ] Complete "Test these live" above.
-- [ ] Complete "Verify first" and the payment URL step.
+- [x] Invoice API verified on Preview (version, dollars, contact filter, balance).
+- [ ] Owner decides Pay Now. Complete "Still to verify live".
 - [ ] Add one test family and confirm: another family's data is refused, drafts are hidden, a balance blocks booking, paying unblocks it.
 - [ ] Confirm the CSP allows the real Supabase host and that video playback works.
 - [ ] Review the privacy notice and consent for storing minors' data with Supabase.

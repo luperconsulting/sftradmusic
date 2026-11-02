@@ -10,8 +10,6 @@ export interface ServerConfig {
     locationId: string;
     lessonCalendarId: string;
     timezone: string;
-    paymentUrlTemplate: string | null;
-    paymentHosts: string[];
   } | null;
   ghlWebhookPublicKey: string | null;
   videoBucket: string;
@@ -32,7 +30,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const calendarId = env.GHL_LESSON_CALENDAR_ID;
   // A public key here would make every store call fail on RLS, so treat it as not configured.
   const usableServerKey = !!serviceRoleKey && supabaseKeyKind(serviceRoleKey) !== "public";
-  const paymentUrlTemplate = env.GHL_INVOICE_PAYMENT_URL_TEMPLATE || null;
   return {
     appUrl: env.APP_URL || "http://localhost:3000",
     supabase: supabaseUrl && usableServerKey ? { url: supabaseUrl, serviceRoleKey: serviceRoleKey! } : null,
@@ -43,8 +40,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
             locationId,
             lessonCalendarId: calendarId,
             timezone: env.GHL_TIMEZONE || "America/Los_Angeles",
-            paymentUrlTemplate,
-            paymentHosts: (env.GHL_PAYMENT_LINK_HOSTS || "").split(",").map((h) => h.trim().toLowerCase()).filter(Boolean),
           }
         : null,
     ghlWebhookPublicKey: env.GHL_WEBHOOK_PUBLIC_KEY || null,

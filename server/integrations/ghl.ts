@@ -12,8 +12,6 @@ export interface GhlConfig {
   locationId: string;
   lessonCalendarId: string;
   timezone: string;
-  paymentUrlTemplate: string | null;
-  paymentHosts: string[];
 }
 
 export interface GhlAppointment {

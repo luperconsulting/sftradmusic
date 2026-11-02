@@ -19,7 +19,7 @@ export const rawInvoice = (over: Record<string, unknown> = {}) => ({
 
 export function fakeGhl(over: Partial<GhlClient> = {}): GhlClient {
   return {
-    config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", paymentUrlTemplate: "https://pay.example.com/i/{invoiceId}", paymentHosts: ["pay.example.com"] },
+    config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC" },
     getFreeSlots: async () => ({ d: [FUTURE] }),
     createAppointment: async (i) => ({ id: "new", calendarId: "cal", contactId: i.contactId, startTime: i.startTime, endTime: i.endTime }),
     updateAppointment: async (id, i) => ({ id, calendarId: "cal", contactId: "contactA", startTime: i.startTime, endTime: i.endTime }),

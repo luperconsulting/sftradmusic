@@ -11,7 +11,6 @@ import { getBilling, getInvoicePaymentLink, isOutstanding } from "./services/bil
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
 import { hashCredential, INVITE_TTL_MS, newEnrollmentCode, newInviteToken } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
-import { runGhlInvoiceCheck } from "./diagnostics/ghlInvoiceCheck.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
 import type { AuthAdmin, PortalStore, StudentRecord } from "./store/types.js";
 
@@ -171,19 +170,6 @@ export function createApp(deps: Deps) {
   app.get("/api/health", (_req, res) => {
     res.json({ supabase: !!deps.store, ghl: !!deps.ghl });
   });
-
-  // Preview deployments only, which sit behind Vercel's login. Absent everywhere else, including production.
-  if (process.env.VERCEL_ENV === "preview") {
-    app.get("/api/internal/ghl-invoice-check", wrap(async (req) => {
-      limiter.hit(`ghl-check:${clientKey(req)}`, 10, 15 * 60000);
-      const token = process.env.GHL_PRIVATE_INTEGRATION_TOKEN;
-      const location = process.env.GHL_LOCATION_ID;
-      const present = { GHL_PRIVATE_INTEGRATION_TOKEN: !!token, GHL_LOCATION_ID: !!location, GHL_LESSON_CALENDAR_ID: !!process.env.GHL_LESSON_CALENDAR_ID };
-      if (!token || !location) return { configured: false, present };
-      const invoiceId = req.query.invoiceId ? parse(z.string().regex(/^[A-Za-z0-9]{10,40}$/), req.query.invoiceId) : null;
-      return { configured: true, present, ...(await runGhlInvoiceCheck(token, location, invoiceId)) };
-    }));
-  }
 
   // ---- public: invitation-only account creation -------------------------------------------------------------
   const findLiveInvite = async (credential: string) => {

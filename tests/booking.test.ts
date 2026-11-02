@@ -92,21 +92,16 @@ describe("rescheduling", () => {
 describe("payment links", () => {
   const pay = (app: any) => request(app).post("/api/invoices/inv1/payment-link").set("Authorization", "Bearer parent");
 
-  it("returns the link for the payer's own unpaid invoice", async () => {
+  it("says plainly that no link is available for the payer's own unpaid invoice, and invents no URL", async () => {
     const res = await pay(createApp(buildDeps({ parent })));
-    expect(res.status).toBe(200);
-    expect(res.body.url).toBe("https://pay.example.com/i/inv1");
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe("payment_link_unavailable");
+    expect(res.body.url).toBeUndefined();
   });
 
   it("refuses another family's invoice", async () => {
     const ghl = fakeGhl({ getInvoice: async () => rawInvoice({ contactDetails: { id: "payerB" } }) });
     expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(403);
-  });
-
-  it("refuses when the configured link points at an unapproved host", async () => {
-    const base = fakeGhl();
-    const ghl = { ...base, config: { ...base.config, paymentHosts: ["other.example.com"] } };
-    expect((await pay(createApp(buildDeps({ parent }, ghl)))).status).toBe(503);
   });
 
   it("won't return a link for a paid invoice", async () => {
