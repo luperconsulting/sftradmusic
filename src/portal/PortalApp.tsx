@@ -1,6 +1,7 @@
 import { useEffect, type ReactNode } from "react";
 import { Navigate, Route, Routes, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { AuthProvider, homeFor, useAuth } from "./auth/AuthContext";
+import { INVITE_PATH } from "./auth/routes";
 import { DEMO_MODE, supabase } from "./auth/supabase";
 import { useAuthVM } from "./vm/useAuthVM";
 import { useStudentVM } from "./vm/useStudentVM";
@@ -9,7 +10,6 @@ import { useSecurity } from "./vm/useSecurity";
 import { useToast } from "./vm/common";
 import AuthLayout from "./views/auth/AuthLayout";
 import SignInView from "./views/auth/SignInView";
-import SignUpView from "./views/auth/SignUpView";
 import InviteView from "./views/auth/InviteView";
 import TwoFactorView from "./views/auth/TwoFactorView";
 import DeniedView from "./views/auth/DeniedView";
@@ -174,7 +174,7 @@ export default function PortalApp() {
       <DemoBanner />
       <Routes>
         <Route path="/signin" element={<SignInRoute />} />
-        <Route path="/signup" element={<AuthScreen screen="signup">{(v) => (<><FormError message={v.formError} /><SignUpView v={v} /></>)}</AuthScreen>} />
+        <Route path="/signup" element={<Navigate to={INVITE_PATH} replace />} />
         <Route path="/invite" element={<AuthScreen screen="invite">{(v) => (<><FormError message={v.formError} /><InviteView v={v} /></>)}</AuthScreen>} />
         <Route path="/verify" element={<VerifyRoute />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />

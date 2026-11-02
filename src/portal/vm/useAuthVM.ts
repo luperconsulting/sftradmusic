@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import type { InvitationPreview } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { homeFor, useAuth } from "../auth/AuthContext";
+import { INVITE_PATH } from "../auth/routes";
 import { markMfaVerified, markPasswordVerified } from "../auth/teacherGate";
 import { isEmailOtp } from "../../../shared/email-otp";
 import { DEMO_MODE, supabase } from "../auth/supabase";
@@ -224,7 +225,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     pickInviteSuccess: () => void finishInvitePassword(),
     go: {
       home: () => { window.location.href = "/"; },
-      signup: () => navigate("/signup"),
+      signup: () => navigate(INVITE_PATH),
       signin: () => void signOut().then(() => navigate("/signin")),
       invite: () => navigate("/invite"),
       student: () => navigate(homeFor(me)),

@@ -283,7 +283,7 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 - **Rate limits are per server instance.** Move `server/rateLimit.ts` to a shared store such as Upstash before relying on it under real traffic.
 - **Features with UI but no backend:** lesson packages, referrals, autopay, weekly repeat bookings, adult-account transfer, recovery codes, invoice PDF download. All say they aren't active. None charges or discounts anything.
 - **Notes are plain text** in the design's five fields, not rich text, and render as text so no HTML can be injected.
-- **Enrollment codes are `SFTM-XXXX-XXXX`**, longer than the design's `SFTM-XXXX`, which was short enough to guess.
+- **The public sign-up page is `/invite`.** `/signup` redirects there. People enter the emailed code, not an `SFTM-` enrollment code. Old `SFTM-` codes are no longer shown on a sign-up screen.
 - **Design decisions to confirm:** the booking dialog shows only the 60-minute $100 lesson. The prototype's data also had an unused 45-minute $75 option, which isn't offered.
 - **`/portal/*` subroutes** are sections or dialogs of the single approved dashboard, not separate pages.
 - **Views use a loosely typed view model** (`VM`), so a wrong field shows as blank instead of failing the type check. Inline styles come straight from the approved design.
