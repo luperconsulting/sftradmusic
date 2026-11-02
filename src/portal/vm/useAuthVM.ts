@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import type { InvitationPreview } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { homeFor, useAuth } from "../auth/AuthContext";
@@ -12,7 +12,6 @@ const NOT_CONFIGURED = "Portal sign-in isn't connected yet. Please contact Zane.
 export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "denied" | "reset"): VM {
   const { me, refresh, signOut, configured, status } = useAuth();
   const navigate = useNavigate();
-  const [params] = useSearchParams();
   const { toast, flash } = useToast();
 
   const [email, setEmail] = useState("");
@@ -25,18 +24,17 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
   const [dialog, setDialog] = useState<string | null>(null);
   const [form, setForm] = useState<any>({});
   // Invitation flows
-  const [step, setStep] = useState<"code" | "invalid" | "details" | "done" | "expired" | "valid" | "success">(screen === "invite" ? "valid" : "code");
+  const [step, setStep] = useState<"code" | "invalid" | "details" | "done" | "expired" | "valid" | "success">("code");
   const [code, setCode] = useState("");
   const [preview, setPreview] = useState<InvitationPreview | null>(null);
-  const token = params.get("token") ?? "";
 
   useEffect(() => {
-    if (screen !== "invite") return;
-    if (!token) return setStep("expired");
-    api<InvitationPreview>("/invitations/verify", { method: "POST", body: { credential: token } })
-      .then(setPreview)
-      .catch(() => setStep("expired"));
-  }, [screen, token]);
+    if (screen !== "invite" || !supabase) return;
+    // A confirmed code already signed them in. A refresh should continue at the password step.
+    supabase.auth.getSession().then(({ data }) => {
+      if (data.session) setStep("details");
+    });
+  }, [screen]);
 
   const signIn = useCallback(async () => {
     if (busy) return;
@@ -88,6 +86,50 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     await refresh();
     setBusy(false);
   }, [busy, refresh]);
+
+  const submitInviteCode = useCallback(async () => {
+    const address = email.trim().toLowerCase();
+    const otp = code.replace(/\D/g, "");
+    if (!address.includes("@")) return setError("Enter the email the code was sent to.");
+    if (otp.length !== 6) return setError("Enter the 6-digit code from the email.");
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      const session = await api<{ accessToken: string; refreshToken: string }>("/invitations/verify-code", { method: "POST", body: { email: address, code: otp } });
+      if (supabase) {
+        const { error: err } = await supabase.auth.setSession({ access_token: session.accessToken, refresh_token: session.refreshToken });
+        if (err) throw new Error("We couldn't start your session. Please try the code again.");
+      }
+      setStep("details");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [email, code, busy]);
+
+  const finishInvitePassword = useCallback(async () => {
+    if (password.length < 12) return setError("Your password needs at least 12 characters.");
+    if (password !== confirm) return setError("Those passwords don't match.");
+    if (busy) return;
+    setBusy(true);
+    setError("");
+    try {
+      if (supabase) {
+        const { error: err } = await supabase.auth.updateUser({ password });
+        if (err) throw new Error("That password couldn't be saved. Please try another.");
+      }
+      setPassword("");
+      setConfirm("");
+      await refresh();
+      navigate("/verify");
+    } catch (e) {
+      setError(errorText(e));
+    } finally {
+      setBusy(false);
+    }
+  }, [password, confirm, busy, refresh, navigate]);
 
   const redeem = useCallback(async (credential: string) => {
     if (password.length < 12) return setError("Your password needs at least 12 characters.");
@@ -156,6 +198,10 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     format: preview?.format ?? "",
     expires: preview ? fmt(preview.expiresAt, { month: "long", day: "numeric", year: "numeric" }) : "",
     create: () => redeem(code),
+    otp: code,
+    setOtp: (e: any) => setCode(String(e.target.value ?? "").replace(/\D/g, "").slice(0, 6)),
+    submitOtp: () => void submitInviteCode(),
+    savePassword: () => void finishInvitePassword(),
     verify: () => undefined,
     later: () => undefined,
   };
@@ -171,7 +217,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     authTitle: screen === "twofa" ? (me?.user.role === "teacher" ? "Teaching Studio" : "Student Portal") : screen === "invite" || screen === "signup" ? "Welcome" : "Student Portal",
     tfa: { key: "", qr: null, input: "", error: false }, 
     rc: { value: form.rc ?? "", set: (e: any) => setForm((f: any) => ({ ...f, rc: e.target.value.toUpperCase() })), applied: false, error: false, referrer: "", apply: () => flash("Referral codes aren't switched on yet.") },
-    pickInviteSuccess: () => redeem(token),
+    pickInviteSuccess: () => void finishInvitePassword(),
     go: {
       home: () => { window.location.href = "/"; },
       signup: () => navigate("/signup"),

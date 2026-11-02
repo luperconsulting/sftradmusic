@@ -324,7 +324,7 @@ export function useTeacherVM(screen: string): VM {
     const actions: [string, string, () => void][] = [];
     if (open_ && code) actions.push(["Copy code", "#1D2A44", () => { copy(code); flash(`Code ${code} copied.`); }]);
     if (open_ && link) actions.push(["Copy link", "#1D2A44", () => { copy(link); flash("Invitation link copied."); }]);
-    if (open_) actions.push(["Resend", "#1D2A44", guard(async () => { await api(`/teacher/invitations/${i.id}/resend`, { method: "POST" }); await refreshInvites(); flash(`A new invitation was emailed to ${i.email}. The previous link no longer works.`); })]);
+    if (open_) actions.push(["Resend", "#1D2A44", guard(async () => { await api(`/teacher/invitations/${i.id}/resend`, { method: "POST" }); await refreshInvites(); flash(`A new code was emailed to ${i.email}. The previous code no longer works.`); })]);
     if (open_) actions.push(["Revoke", "#9C5F22", guard(async () => { await api(`/teacher/invitations/${i.id}/revoke`, { method: "POST" }); await refreshInvites(); flash("Invitation revoked."); })]);
     return {
       name: i.name, email: i.email, student: i.studentName, status: invLabel[i.status] ?? i.status, sColor: invColor[i.status] ?? "#1D2A44", code,
@@ -546,14 +546,12 @@ export function useTeacherVM(screen: string): VM {
       if (!email.includes("@")) return flash("Enter a valid email address.");
       const name = invName.trim();
       const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: { email, ...(name ? { name } : {}) } });
-      if (created.inviteUrl) {
-        setIssued((m) => ({ ...m, [created.id]: created.inviteUrl! }));
-        copy(created.inviteUrl);
-      }
+      const page = `${window.location.origin}/invite`;
+      copy(page);
       setInvEmail("");
       setInvName("");
       await refreshInvites();
-      flash(`Invitation emailed to ${email}. The link opens this site's invite page. Nothing is created in GoHighLevel until they sign up.`);
+      flash(`A one-time code was emailed to ${email}. They enter it at ${page}, then choose a password and turn on two-factor authentication.`);
     }),
     // Migrate
     migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),

@@ -10,7 +10,7 @@ export default function InvitationsView({ v }: { v: VM }) {
       <section style={{ background: "#fff", border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", padding: "28px", display: "flex", flexDirection: "column", gap: "18px" }}>
         <div>
           <h2 style={{ fontFamily: "'Cinzel',Georgia,serif", fontWeight: "500", fontSize: "14px", letterSpacing: ".14em", textTransform: "uppercase", color: "#1D2A44", margin: "0 0 6px" }}>Invite a student</h2>
-          <p style={{ fontSize: "13px", color: "rgba(17,22,27,.6)", margin: "0", lineHeight: "1.6" }}>Enter an email and, if you have it, their name. They receive a one-time link and are added only after they finish signing up. The link expires in 7 days.</p>
+          <p style={{ fontSize: "13px", color: "rgba(17,22,27,.6)", margin: "0", lineHeight: "1.6" }}>Enter an email and, if you have it, their name. They receive a one-time code, enter it on the invite page, then choose a password and turn on two-factor authentication. The code expires in one hour.</p>
         </div>
         <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <span style={label}>Email</span>

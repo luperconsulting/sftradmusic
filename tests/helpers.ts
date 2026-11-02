@@ -48,7 +48,8 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
   const auth: Partial<AuthAdmin> = {
     verifyToken: async (token) => (users[token] ? { userId: token, email: `${token}@example.com`, aal: users[token].aal ?? "aal2", mfaEnrolled: users[token].mfa ?? true } : null),
     sendPasswordReset: async () => undefined,
-    sendPortalInvite: async () => "invited-user",
+    sendPortalInvite: async () => null,
+    verifyEmailOtp: async () => null,
     setBanned: async () => undefined,
   };
   const fullStore: Partial<PortalStore> = {
@@ -67,6 +68,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     revokeInvitation: async () => undefined,
     revokePendingForEmail: async () => undefined,
     getInvitation: async () => null,
+    findPendingInvitationByEmail: async () => null,
     deleteStudent: async () => undefined,
     createInvitation: async (i: any) => ({ ...i, id: "inv", status: "pending" }),
     ...store,

@@ -301,6 +301,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       const r = must(await db.from("invitations").select("*").eq("token_hash", hash).maybeSingle());
       return r ? toInvitation(r) : null;
     },
+    async findPendingInvitationByEmail(email) {
+      const rows = must(await db.from("invitations").select("*").eq("email", email.toLowerCase()).eq("status", "pending").order("sent_at", { ascending: false }).limit(1)) as any[];
+      return rows[0] ? toInvitation(rows[0]) : null;
+    },
     async claimInvitation(id) {
       const rows = must(await db.from("invitations").update({ status: "accepted" }).eq("id", id).eq("status", "pending").gt("expires_at", new Date().toISOString()).select("id")) as any[];
       return rows.length === 1;
@@ -391,16 +395,18 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
       return setLoginPassword(admin, id, password);
     },
     async sendPortalInvite(email, redirectTo) {
-      // Supabase sends this mail. GoHighLevel safe mode does not apply, and the redirect is the caller's URL.
-      const invited = await admin.auth.admin.inviteUserByEmail(email, { redirectTo });
-      if (!invited.error && invited.data.user) return invited.data.user.id;
-      if (!isExistingLogin(invited.error)) throw new Error("auth: could not send invitation");
-      const magic = await admin.auth.signInWithOtp({
+      // Supabase emails the 6-digit code from the Magic Link template. A new send replaces the previous code.
+      const { error } = await admin.auth.signInWithOtp({
         email,
-        options: { emailRedirectTo: redirectTo, shouldCreateUser: false },
+        options: { shouldCreateUser: true, emailRedirectTo: redirectTo },
       });
-      if (magic.error) throw new Error("auth: could not send invitation");
+      if (error) throw new Error("auth: could not send invitation");
       return null;
+    },
+    async verifyEmailOtp(email, code) {
+      const { data, error } = await admin.auth.verifyOtp({ email, token: code, type: "email" });
+      if (error || !data.session || !data.user) return null;
+      return { userId: data.user.id, accessToken: data.session.access_token, refreshToken: data.session.refresh_token };
     },
     async deleteUser(userId) {
       const { error } = await admin.auth.admin.deleteUser(userId);

@@ -11,7 +11,7 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
-import { assertPortalInviteEmail, hashCredential, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInviteRedirect } from "./services/invitations.js";
+import { assertPortalInviteEmail, hashCredential, INVITE_CODE_TTL_MS, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInvitePage } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
 import type { AuthAdmin, PortalStore, StudentRecord } from "./store/types.js";
@@ -198,18 +198,15 @@ export function createApp(deps: Deps) {
     return preview;
   }));
 
-  app.post("/api/invitations/redeem", wrap(async (req) => {
-    limiter.hit(`invite-redeem:${clientKey(req)}`, 10, 15 * 60000);
-    const { credential, password: pw } = parse(z.object({ credential: z.string().trim().min(8).max(200), password }), req.body);
+  const completeInvitation = async (invite: Awaited<ReturnType<typeof findLiveInvite>>, opts: { userId?: string; password?: string }) => {
     const { store, auth } = needStore();
-    const invite = await findLiveInvite(credential);
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
-    let userId: string | null = null;
+    let userId: string | null = opts.userId ?? null;
     let createdStudentId: string | null = null;
     let createdContactIds: string[] = [];
     try {
       let studentIds = invite.studentIds;
-      // Invite-first: the student and the GoHighLevel contact do not exist until this sign-up.
+      // The student and the GoHighLevel contact do not exist until the code is confirmed.
       if (studentIds.length === 0) {
         const ghl = needGhl();
         const enrolled = await enrollInvitedStudent(ghl, store, { fullName: inviteeFullName(invite.name, invite.email), email: invite.email });
@@ -217,11 +214,11 @@ export function createApp(deps: Deps) {
         createdContactIds = enrolled.createdContactIds;
         studentIds = [enrolled.student.id];
       }
-      userId = await auth.createUser(invite.email, pw, invite.preview.authUserId);
+      if (!userId) userId = await auth.createUser(invite.email, opts.password ?? "", invite.preview.authUserId);
       await store.createAccountForInvitation({ ...invite, studentIds }, userId);
     } catch (e) {
-      // Undo the half-made login too. Otherwise a retry fails forever because the email is already taken.
-      if (userId) await auth.deleteUser(userId).catch(() => console.error("[api] could not remove partial user"));
+      // A login this request created is removed. An OTP login is left, so a resent code can try again.
+      if (userId && !opts.userId) await auth.deleteUser(userId).catch(() => console.error("[api] could not remove partial user"));
       if (createdStudentId) {
         await store.deleteStudent(createdStudentId).catch(() => console.error("[api] could not remove the student created for this invite"));
         const ghl = deps.ghl;
@@ -238,8 +235,31 @@ export function createApp(deps: Deps) {
       await store.releaseInvitation(invite.id);
       throw e;
     }
+  };
+
+  app.post("/api/invitations/redeem", wrap(async (req) => {
+    limiter.hit(`invite-redeem:${clientKey(req)}`, 10, 15 * 60000);
+    const { credential, password: pw } = parse(z.object({ credential: z.string().trim().min(8).max(200), password }), req.body);
+    const { store } = needStore();
+    const invite = await findLiveInvite(credential);
+    await completeInvitation(invite, { password: pw });
     await store.audit(null, "invitation.redeemed", invite.id);
     return { email: invite.email };
+  }));
+
+  app.post("/api/invitations/verify-code", wrap(async (req) => {
+    const body = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), code: z.string().trim() }), req.body);
+    limiter.hit(`invite-code:${clientKey(req)}:${body.email}`, 8, 15 * 60000);
+    if (!/^\d{6}$/.test(body.code)) throw new ApiError(400, "invalid_code", "Enter the 6-digit code from the email.");
+    const { store, auth } = needStore();
+    const invite = await store.findPendingInvitationByEmail(body.email);
+    if (!invite) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
+    if (new Date(invite.expiresAt).getTime() < Date.now()) throw new ApiError(410, "invitation_expired", "This code has expired. Ask Zane to send a new one.");
+    const session = await auth.verifyEmailOtp(body.email, body.code);
+    if (!session) throw new ApiError(401, "invalid_code", "That code isn't valid or has expired.");
+    await completeInvitation(invite, { userId: session.userId });
+    await store.audit(null, "invitation.redeemed", invite.id);
+    return { accessToken: session.accessToken, refreshToken: session.refreshToken, email: invite.email };
   }));
 
   // ---- signed-in, any role ---------------------------------------------------------------------------------
@@ -632,7 +652,7 @@ export function createApp(deps: Deps) {
     // A new code replaces any still-pending invite for this email, including a resend of the same row.
     await store.revokePendingForEmail(input.email);
     const credential = input.method === "code" ? newEnrollmentCode() : newInviteToken();
-    const inviteUrl = input.method === "email" ? portalInviteRedirect(config.appUrl, credential) : undefined;
+    const inviteUrl = input.method === "email" ? portalInvitePage(config.appUrl) : undefined;
     const fullName = inviteeFullName(input.name, input.email);
     const invite = await store.createInvitation({
       tokenHash: hashCredential(credential),
@@ -641,7 +661,7 @@ export function createApp(deps: Deps) {
       name: input.name.trim() || fullName,
       role: input.role,
       studentIds: input.studentIds,
-      expiresAt: new Date(Date.now() + INVITE_TTL_MS).toISOString(),
+      expiresAt: new Date(Date.now() + (input.method === "email" ? INVITE_CODE_TTL_MS : INVITE_TTL_MS)).toISOString(),
       preview: {
         firstName: fullName.split(/\s+/)[0] || fullName,
         studentLine: linked.length ? linked.map((s) => s.fullName).join(", ") : "Not enrolled yet",
@@ -653,8 +673,7 @@ export function createApp(deps: Deps) {
     let emailed = false;
     if (inviteUrl) {
       try {
-        const authUserId = await auth.sendPortalInvite(input.email, inviteUrl);
-        if (authUserId) await store.attachInvitationAuthUser(invite.id, authUserId).catch(() => undefined);
+        await auth.sendPortalInvite(input.email, inviteUrl);
         emailed = true;
       } catch (e) {
         await store.revokeInvitation(invite.id).catch(() => undefined);
@@ -674,7 +693,7 @@ export function createApp(deps: Deps) {
       sentAt: new Date().toISOString(),
       expiresAt: invite.expiresAt,
       accountId: null,
-      credential,
+      ...(input.method === "code" ? { credential } : {}),
       emailed,
       inviteUrl,
     };
