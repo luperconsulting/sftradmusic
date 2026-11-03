@@ -10,7 +10,7 @@ import { DEMO_MODE, supabase } from "../auth/supabase";
 import { fmt, useToast } from "./common";
 import type { VM } from "./types";
 
-const NOT_CONFIGURED = "Portal sign-in isn't connected yet. Please contact Zane.";
+const NOT_CONFIGURED = "Sign-in needs the Supabase settings for this site. Please contact Zane.";
 
 export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "denied" | "reset"): VM {
   const { me, refresh, signOut, configured, status } = useAuth();
@@ -221,7 +221,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     codeDigits, twofaLabel: me?.user.role === "teacher" ? "Teacher account" : "Your account",
     authTitle: screen === "twofa" ? (me?.user.role === "teacher" ? "Teaching Studio" : "Student Portal") : screen === "invite" || screen === "signup" ? "Welcome" : "Student Portal",
     tfa: { key: "", qr: null, input: "", error: false }, 
-    rc: { value: form.rc ?? "", set: (e: any) => setForm((f: any) => ({ ...f, rc: e.target.value.toUpperCase() })), applied: false, error: false, referrer: "", apply: () => flash("Referral codes aren't switched on yet.") },
+    rc: { value: form.rc ?? "", set: (e: any) => setForm((f: any) => ({ ...f, rc: e.target.value.toUpperCase() })), applied: false, error: false, referrer: "", apply: () => flash("Open the student page after sign-in and send the referral from there.") },
     pickInviteSuccess: () => void finishInvitePassword(),
     go: {
       home: () => { window.location.href = "/"; },

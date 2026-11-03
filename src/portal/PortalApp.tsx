@@ -68,7 +68,7 @@ function SignInRoute() {
   return (
     <AuthScreen screen="signin">
       {(v) => {
-        const extra = status === "suspended" ? "This account's access has been turned off. Please contact Zane." : status === "noAccount" ? "No portal account is linked to this sign-in. Please contact Zane." : status === "unavailable" ? "The portal can't be reached right now. Please try again shortly." : !supabase && !DEMO_MODE ? "Portal sign-in isn't connected yet. Please contact Zane." : "";
+        const extra = status === "suspended" ? "This account's access has been turned off. Please contact Zane." : status === "noAccount" ? "No portal account is linked to this sign-in. Please contact Zane." : status === "unavailable" ? "The portal can't be reached right now. Please try again shortly." : !supabase && !DEMO_MODE ? "Sign-in needs the Supabase settings for this site. Please contact Zane." : "";
         return (
           <>
             <FormError message={extra} />
@@ -130,7 +130,7 @@ function RequireRole({ role, children }: { role: "teacher" | "family"; children:
   return <>{children}</>;
 }
 
-const SECTION_BY_PATH: Record<string, string> = { "/portal/notes": "portal-notes", "/portal/videos": "portal-videos", "/portal/assignments": "portal-videos", "/portal/invoices": "portal-balance", "/portal/payments": "portal-payments", "/portal/messages": "portal-messages" };
+const SECTION_BY_PATH: Record<string, string> = { "/portal/notes": "portal-notes", "/portal/videos": "portal-videos", "/portal/assignments": "portal-videos", "/portal/invoices": "portal-balance", "/portal/payments": "portal-payments" };
 
 function StudentRoute() {
   const [params] = useSearchParams();
@@ -166,7 +166,7 @@ function TeacherRoute({ screen }: { screen: string }) {
   );
 }
 
-const teacherRoutes: [string, string][] = [["/teacher", "overview"], ["/teacher/calendar", "calendar"], ["/teacher/invoices", "invoices"], ["/teacher/students", "students"], ["/teacher/students/:studentId", "profile"], ["/teacher/messages", "messages"], ["/teacher/notes", "notes"], ["/teacher/videos", "videos"], ["/teacher/assignments", "assignments"], ["/teacher/invitations", "invitations"], ["/teacher/settings", "settings"]];
+const teacherRoutes: [string, string][] = [["/teacher", "overview"], ["/teacher/calendar", "calendar"], ["/teacher/invoices", "invoices"], ["/teacher/students", "students"], ["/teacher/students/:studentId", "profile"], ["/teacher/notes", "notes"], ["/teacher/videos", "videos"], ["/teacher/assignments", "assignments"], ["/teacher/invitations", "invitations"], ["/teacher/settings", "settings"]];
 
 export default function PortalApp() {
   return (
@@ -179,7 +179,7 @@ export default function PortalApp() {
         <Route path="/verify" element={<VerifyRoute />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
         <Route path="/denied" element={<AuthScreen screen="denied">{(v) => <DeniedView v={v} />}</AuthScreen>} />
-        {["/portal", "/portal/calendar", "/portal/invoices", "/portal/payments", "/portal/messages", "/portal/notes", "/portal/videos", "/portal/assignments"].map((p) => (
+        {["/portal", "/portal/calendar", "/portal/invoices", "/portal/payments", "/portal/notes", "/portal/videos", "/portal/assignments"].map((p) => (
           <Route key={p} path={p} element={<RequireRole role="family"><StudentRoute /></RequireRole>} />
         ))}
         {teacherRoutes.map(([p, screen]) => (

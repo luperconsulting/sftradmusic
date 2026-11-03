@@ -10,10 +10,13 @@ export const LESSON_MINUTES = 60;
 const RESCHEDULE_CUTOFF_MS = 24 * 3600 * 1000;
 
 export const LOCATIONS = { "Music City SF": "Music City SF, Room 4, 1353 Bush St", Zoom: "Zoom" } as const;
+export const RECURRING_WEEKS = 8;
+
 export const bookingSchema = z.object({
   studentId: z.string().uuid(),
   startTime: z.string().datetime({ offset: true }),
   location: z.enum(["Music City SF", "Zoom"]),
+  repeatWeekly: z.boolean().optional(),
 });
 
 const instant = (iso: string) => new Date(iso).getTime();
@@ -48,6 +51,34 @@ export async function createLessonBooking(
     title: `Lesson: ${student.fullName}`,
     address: LOCATIONS[input.location],
   });
+}
+
+/** Eight weekly lessons. The GoHighLevel client sets toNotify false while safe mode is on. */
+export async function createWeeklyLessons(
+  ghl: GhlClient,
+  actor: Actor,
+  student: StudentRecord,
+  input: { startTime: string; location: keyof typeof LOCATIONS },
+) {
+  if (ghl.config.safeMode !== true) throw new ApiError(501, "feature_not_enabled", "Weekly lessons are only booked when safe mode is on, so nobody is notified.");
+  if (!canBookFor(actor, student.id)) throw forbidden("This account can't book lessons for this student.");
+  const billing = await getBilling(ghl, student.billingContactId);
+  if (billing.bookingBlocked) throw new ApiError(402, "outstanding_balance", OUTSTANDING_BALANCE_MESSAGE);
+  await assertSlotOpen(ghl, input.startTime);
+  const events: Awaited<ReturnType<GhlClient["createAppointment"]>>[] = [];
+  for (let week = 0; week < RECURRING_WEEKS; week++) {
+    const startMs = instant(input.startTime) + week * 7 * 86400000;
+    const startTime = new Date(startMs).toISOString();
+    const endTime = new Date(startMs + LESSON_MINUTES * 60000).toISOString();
+    events.push(await ghl.createAppointment({
+      contactId: student.ghlContactId,
+      startTime,
+      endTime,
+      title: `Lesson: ${student.fullName}`,
+      address: LOCATIONS[input.location],
+    }));
+  }
+  return events;
 }
 
 export async function rescheduleLesson(

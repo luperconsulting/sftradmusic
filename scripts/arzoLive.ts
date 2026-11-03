@@ -145,29 +145,6 @@ async function deletePortalTestMessages(db: SupabaseClient, studentId: string) {
   if (threads.error) throw new Error(threads.error.message);
 }
 
-async function writePortalTestMessages(db: SupabaseClient, studentId: string, seed: ArzoSeed) {
-  await deletePortalTestMessages(db, studentId);
-  const probe = await db.from("message_threads").select("id").limit(1);
-  if (probe.error) {
-    if (isMissingRelation(probe.error)) return false;
-    throw new Error(probe.error.message);
-  }
-  let threadId: string | null = null;
-  for (const message of seed.messages) {
-    if (!threadId) {
-      const thread = await db.from("message_threads").insert({ student_id: studentId, subject: message.subject }).select("id").single();
-      if (thread.error) {
-        if (isMissingRelation(thread.error)) return false;
-        throw new Error(thread.error.message);
-      }
-      threadId = thread.data.id;
-    }
-    const saved = await db.from("messages").insert({ thread_id: threadId, student_id: studentId, body: message.body });
-    if (saved.error) throw new Error(saved.error.message);
-  }
-  return seed.messages.length > 0;
-}
-
 async function deleteInvoiceFixtures(db: SupabaseClient, studentId: string) {
   const existing = await db.from("invoices").delete().eq("student_id", studentId).like("title", `${PORTAL_TEST}:%`);
   if (existing.error && !isMissingRelation(existing.error) && !isMissingColumn(existing.error)) throw new Error(existing.error.message);
@@ -267,8 +244,7 @@ export async function runArzoSeed(env: Record<string, string | undefined>, mode:
   }))).select("id");
   if (savedAssignments.error) throw new Error(savedAssignments.error.message);
   await db.from("practice_assignment_students").insert((savedAssignments.data ?? []).map((a) => ({ assignment_id: a.id, student_id: studentId })));
-  const wroteMessages = await writePortalTestMessages(db, studentId, seed);
   const wroteInvoices = await writeInvoiceFixtures(db, studentId, seed);
   await replaceLessons(env, seed, true);
-  return { ok: true as const, studentId, wroteInvoices, wroteMessages, videos: seed.videos.length };
+  return { ok: true as const, studentId, wroteInvoices, wroteMessages: false, videos: seed.videos.length };
 }

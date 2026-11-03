@@ -17,7 +17,7 @@ const isTeacherPath = () => window.location.pathname.startsWith("/teacher") || !
 function dashboard(): DashboardResponse {
   const s = [student(A, "Sample", "Student"), student(B, "Example", "Student")];
   const unpaid = scenario() === "unpaid";
-  if (scenario() === "new") return { students: [s[0]], student: s[0], upcoming: [lesson("l1", 6)], history: [], notes: [], videos: [], assignments: [], billing: { outstanding: 0, openInvoices: [], history: [], bookingBlocked: false }, lessonsAvailable: true, canBook: true, canPay: true, readOnly: false };
+  if (scenario() === "new") return { students: [s[0]], student: s[0], upcoming: [lesson("l1", 6)], history: [], notes: [], videos: [], assignments: [], packageLessons: 0, autopayEnabled: false, billing: { outstanding: 0, openInvoices: [], history: [], bookingBlocked: false }, lessonsAvailable: true, canBook: true, canPay: true, readOnly: false };
   const open = unpaid ? [invoice("i2", "2002", "sent", 200, -4)] : [];
   const paid = [invoice("i1", "2001", "paid", 200, -10)];
   return {
@@ -27,6 +27,8 @@ function dashboard(): DashboardResponse {
     notes: [note("n1", -3, "Sample note: B part, snap bowing"), note("n2", -10, "Sample note: intonation on the 3rd finger")],
     videos: [video("v1", "Sample Video: Bowing", "Technique", false), video("v2", "Sample Video: Tune Walkthrough", "Repertoire", true), video("v3", "Sample Video: Drone Routine", "Practice Exercises", true)],
     assignments: [],
+    packageLessons: 0,
+    autopayEnabled: false,
     billing: scenario() === "nobilling" ? null : { outstanding: unpaid ? 200 : 0, openInvoices: open, history: [...open, ...paid], bookingBlocked: unpaid },
     lessonsAvailable: true, canBook: true, canPay: true, readOnly: isTeacherPath(),
   };
@@ -35,7 +37,7 @@ function dashboard(): DashboardResponse {
 const sampleContacts = [{ id: "c-rowan", name: "Rowan Sample", email: "rowan@example.com" }, { id: "c-parent", name: "Pat Sample", email: "pat@example.com" }];
 const addedStudents: any[] = [];
 
-const rows = (): TeacherStudentRow[] => [...addedStudents, student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, accountId: A, portalStatus: "active", transferPending: false, ghlContactId: "sample", billingContactId: "sample" }));
+const rows = (): TeacherStudentRow[] => [...addedStudents, student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, packageLessons: 0, accountId: A, portalStatus: "active", transferPending: false, ghlContactId: "sample", billingContactId: "sample" }));
 
 export async function demoApi(path: string, opts: { method?: string; body?: unknown }) {
   await new Promise((r) => setTimeout(r, 150));
@@ -62,7 +64,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
     const me: MeResponse = {
       user: { id: "demo", email: teacher ? "teacher@example.com" : "parent@example.com", role: teacher ? "teacher" : "guardian", displayName: teacher ? "Sample Teacher" : "Sample Parent", mfaEnabled: true, aal: "aal2" },
       account: { label: teacher ? "Sample Teacher" : "The Sample Family", ownerFirst: "Sample", ownerFull: teacher ? "Sample Teacher" : "Sample Parent", email: "parent@example.com", initials: "SP", isFamily: true },
-      features: { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false },
+      features: { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true },
     };
     return me;
   }
@@ -73,11 +75,11 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/overview") return { studentCount: 3, adultCount: 1, recentNotes: [{ ...note("n0", -1, "Sample draft note", "draft"), studentName: "Sample Student" }], recentVideos: [{ title: "Sample Video: Bowing", to: "Sample", assignedAt: iso(-3) }], invitations: [] };
   if (p === "/teacher/calendar") return { events: [2, 3, 5].map((d, i) => ({ id: `e${i}`, startTime: new Date(new Date(Number(new URLSearchParams(path.split("?")[1]).get("from"))).getTime() + (d * 24 + 16) * 36e5).toISOString(), endTime: "", title: "Lesson", address: i === 1 ? "Zoom" : "Music City SF", status: "confirmed", studentId: A, studentName: "Sample Student" })) };
   if (p === "/teacher/invoices") return { invoices: [invoice("i2", "2002", "sent", 200, -4), invoice("i1", "2001", "paid", 200, -10), invoice("i3", "2003", "draft", 100, 3)], total: 3 };
-  if (p === "/messages" || p === "/teacher/messages") {
-    const thread = { id: "m1", studentId: A, studentName: "Sample Student", subject: "Sample thread", createdAt: iso(-1), messages: [{ id: "mm1", body: "Sample message. Nothing is emailed.", createdAt: iso(-1), authorName: "Sample Teacher", authorRole: "teacher" }] };
-    if (opts.method === "POST") return { thread };
-    return { threads: [thread] };
-  }
+  if (p === "/packages/purchase" && opts.method === "POST") return { ok: true, suppressed: true, lessonsAdded: 8, lessonsRemaining: 8, placeholder: true };
+  if (p === "/autopay" && opts.method === "POST") return { ok: true, suppressed: true, enabled: true, processor: "stripe-test-log" };
+  if (p === "/referrals/invite" && opts.method === "POST") return { ok: true, suppressed: true, emailed: false, allowlisted: false, contactId: "sample" };
+  if (p === "/referrals/apply" && opts.method === "POST") return { ok: true, suppressed: true, code: "SFTM-PORTAL00" };
+  if (p === "/lessons" && opts.method === "POST") return { id: "lesson", startTime: iso(6), count: (opts.body as any)?.repeatWeekly ? 8 : 1, suppressed: !!(opts.body as any)?.repeatWeekly };
   if (p === "/teacher/videos") return { videos: [video("v1", "Sample Video: Bowing", "Technique", false), video("v2", "Sample Video: Tune Walkthrough", "Repertoire", true)].map((v) => ({ ...v, assignedCount: 2 })) };
   if (p === "/teacher/assignments") return { assignments: [{ id: "a1", title: "Sample assignment", instructions: "Sample instructions.", dueDate: day(4), videoId: null, videoTitle: "Sample Video: Bowing", lessonDate: day(-3), students: [{ id: A, name: "Sample Student", completedAt: null }] }] };
   if (p === "/teacher/invitations") return { invitations: [{ id: "x1", name: "Sample Parent", email: "parent@example.com", studentName: "Sample Student", status: "accepted", method: "email", sentAt: iso(-3), expiresAt: null, accountId: null }, { id: "x2", name: "Another Parent", email: "another@example.com", studentName: "Example Student", status: "code_issued", method: "code", sentAt: iso(-1), expiresAt: iso(6), accountId: null }] };
