@@ -60,7 +60,8 @@ describe("role and 2FA enforcement", () => {
 
   it("still lets a password-only session read its profile, so setup can start", async () => {
     const deps = buildDeps({ p: { ...parent, mfa: false, aal: "aal1" } }, null, { getAccount: async () => ({ id: "p", userId: "p", role: "guardian", status: "active", email: "", displayName: "T U", ghlContactId: null }) });
-    expect((await get(createApp(deps), "/api/me", "p")).status).toBe(200);
+    expect((await get(createApp(deps), "/api/me", "p")).status).toBe(403);
+    expect((await get(createApp(deps), "/api/me", "p")).body.error.code).toBe("mfa_required");
   });
 
   it("lets a fully verified teacher in", async () => {
