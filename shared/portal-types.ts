@@ -113,6 +113,10 @@ export interface DashboardResponse {
   notes: NoteDTO[];
   videos: AssignedVideoDTO[];
   assignments: PracticeAssignmentDTO[];
+  /** Lesson credits from placeholder package purchases. Zero means none have been recorded. */
+  packageLessons: number;
+  /** Preview autopay preference. This is not a saved card. */
+  autopayEnabled: boolean;
   /** null means billing could not be read. The UI must never present that as a zero balance. */
   billing: BillingDTO | null;
   /** Lessons read from GoHighLevel. false means lesson data is unavailable, not empty. */
@@ -125,23 +129,6 @@ export interface DashboardResponse {
 export interface SlotsResponse {
   timezone: string;
   days: Record<string, string[]>;
-}
-
-export interface MessageDTO {
-  id: string;
-  body: string;
-  createdAt: string;
-  authorName: string;
-  authorRole: Role | null;
-}
-
-export interface MessageThreadDTO {
-  id: string;
-  studentId: string;
-  studentName: string;
-  subject: string;
-  createdAt: string;
-  messages: MessageDTO[];
 }
 
 export interface InvitationDTO {
@@ -185,6 +172,8 @@ export interface TeacherStudentRow extends StudentSummary {
   noteCount: number;
   videoCount: number;
   assignmentCount: number;
+  /** Placeholder package credits recorded in the portal. */
+  packageLessons: number;
   accountId: string | null;
   portalStatus: "active" | "suspended" | "none";
   transferPending: boolean;

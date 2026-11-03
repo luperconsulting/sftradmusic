@@ -38,7 +38,7 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
 
   const verify = useCallback(async (): Promise<boolean> => {
     if (!supabase || !enroll) {
-      flash(DEMO_MODE ? "Sample mode: two-factor isn't connected." : "Two-factor isn't available right now.");
+      flash(DEMO_MODE ? "Sample mode: two-factor is unavailable." : "Two-factor isn't available right now.");
       return false;
     }
     if (input.length !== 6 || busy) {

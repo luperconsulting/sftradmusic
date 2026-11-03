@@ -33,12 +33,12 @@ describe("Arzo seed plan", () => {
 
   it("checks every student and teacher page and leaves invoices and messages unwritten", () => {
     const checks = pageChecks(buildArzoSeed());
-    const student = ["Student profile", "Student lessons", "Student notes", "Student practice", "Student videos", "Student balance", "Student messages"];
+    const student = ["Student profile", "Student lessons", "Student notes", "Student practice", "Student videos", "Student balance"];
     const teacher = ["Teacher students", "Teacher profile", "Teacher notes", "Teacher videos", "Teacher assignments", "Teacher calendar", "Teacher invoices"];
     expect(checks.map((c) => c.page)).toEqual([...student, ...teacher]);
     expect(checks.find((c) => c.page === "Student videos")?.pass).toBe(true);
     expect(checks.find((c) => c.page === "Student balance")?.pass).toBe(false);
-    expect(checks.find((c) => c.page === "Student messages")?.pass).toBe(true);
+    expect(checks.some((c) => c.page === "Student messages")).toBe(false);
     expect(checks.find((c) => c.page === "Teacher invoices")?.pass).toBe(false);
   });
 
@@ -59,14 +59,12 @@ describe("Arzo seed plan", () => {
 });
 
 describe("feature flags", () => {
-  it("turns on invoice actions for preview only", () => {
-    expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual({ packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: true });
-    expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual({ packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false });
-    expect(FEATURE_REVIEWS.invoiceActions.pass).toBe(true);
-    expect(FEATURE_REVIEWS.packages.pass).toBe(false);
-    expect(FEATURE_REVIEWS.autopay.pass).toBe(false);
-    expect(FEATURE_REVIEWS.referrals.pass).toBe(false);
-    expect(FEATURE_REVIEWS.recurring.pass).toBe(false);
+  it("turns every flag on for preview only", () => {
+    const on = { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true };
+    const off = { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false };
+    expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual(on);
+    expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual(off);
+    expect(Object.values(FEATURE_REVIEWS).every((review) => review.pass)).toBe(true);
   });
 
   it("leaves package, autopay, referral, and invoice actions returning 501", async () => {

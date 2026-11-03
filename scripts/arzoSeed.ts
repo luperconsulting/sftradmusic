@@ -51,10 +51,6 @@ export function buildArzoSeed(now = new Date("2026-11-02T18:00:00.000Z")) {
       { title: "portal-test: Paid lesson", status: "paid", liveMode: false, total: 100, amountPaid: 100, amountDue: 0 },
       { title: "portal-test: Open lesson", status: "sent", liveMode: false, total: 100, amountPaid: 0, amountDue: 100 },
     ],
-    messages: [
-      { subject: "portal-test: Practice check-in", body: "Portal-test message from Arzo. This stays in the portal.", from: "student" as const },
-      { subject: "portal-test: Practice check-in", body: "Portal-test reply from the teacher. No email or SMS was sent.", from: "teacher" as const },
-    ],
     sendsEmail: false,
     sendsSms: false,
   };
@@ -72,7 +68,6 @@ export function pageChecks(seed: ArzoSeed): PageCheck[] {
     { page: "Student practice", role: "student", pass: seed.assignments.length === 1 && seed.assignments[0].instructions.length > 0, detail: seed.assignments[0].title },
     { page: "Student videos", role: "student", pass: VIDEO_CATEGORIES.every((c) => seed.videos.some((v) => v.category === c && v.bytes.length > 0)), detail: `${seed.videos.length} categories` },
     { page: "Student balance", role: "student", pass: false, detail: "The balance view reads GoHighLevel. The seed does not create invoices, because there is no cached invoice table." },
-    { page: "Student messages", role: "student", pass: seed.messages.length === 2 && seed.messages.every((m) => m.subject.startsWith("portal-test:")), detail: "In-portal thread. Rows are written only after migration 0003 is applied." },
     { page: "Teacher students", role: "teacher", pass: seed.profile.ghlContactId === ARZO_GHL_CONTACT_ID, detail: seed.profile.email },
     { page: "Teacher profile", role: "teacher", pass: seed.profile.format === "In person" && seed.profile.studentSince === "2026-01-15", detail: seed.profile.styleLine },
     { page: "Teacher notes", role: "teacher", pass: seed.notes.length === 2, detail: "One published note and one draft." },

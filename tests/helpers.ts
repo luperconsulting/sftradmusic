@@ -62,6 +62,7 @@ export function buildDeps(users: Record<string, Who>, ghl: GhlClient | null = fa
     listAssignedVideos: async () => [],
     listAssignments: async () => [],
     audit: async () => undefined,
+    listAudit: async () => [],
     lastInvoiceLinkSentAt: async () => null,
     checkStudentSchema: async () => undefined,
     attachInvitationAuthUser: async () => undefined,
