@@ -7,4 +7,4 @@ if (!result.ok) {
   console.error("Nothing was deleted.");
   process.exit(2);
 }
-console.log(`Removed portal-test notes, videos, assignments, and lessons for student ${result.studentId}. The account was kept.`);
+console.log(`Removed portal-test notes, videos, storage objects, assignments, messages, and lessons for student ${result.studentId}. The account was kept.`);

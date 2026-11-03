@@ -8,7 +8,7 @@ export const FEATURE_REVIEWS: Record<FeatureName, { pass: boolean; reason: strin
   autopay: { pass: false, reason: "POST /api/autopay returns 501. Turning the switch on would describe a real per-lesson charge." },
   referrals: { pass: false, reason: "POST /api/referrals/invite and /api/referrals/apply return 501." },
   recurring: { pass: false, reason: "Weekly repeat only flashes a message. Booking still creates one appointment." },
-  invoiceActions: { pass: false, reason: "Send, remind, void, and mark-paid return 501 so the portal cannot mark an invoice paid." },
+  invoiceActions: { pass: true, reason: "On preview, send, remind, void, and mark-paid only write a log. They never call GoHighLevel, so nothing is sent or charged. Production stays off." },
 };
 
 const OFF: Features = { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false };

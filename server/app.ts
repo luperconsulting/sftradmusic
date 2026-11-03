@@ -10,6 +10,7 @@ import { memoryRateLimiter, type RateLimiter } from "./rateLimit.js";
 import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, canPayFor, type Actor } from "./auth/policy.js";
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
+import { recordInvoiceAction } from "./services/invoiceActions.js";
 import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
 import { isEmailOtp } from "../shared/email-otp.js";
 import { assertPortalInviteEmail, hashCredential, INVITE_CODE_TTL_MS, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInvitePage } from "./services/invitations.js";
@@ -417,6 +418,34 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
+  const messageSchema = z.object({
+    studentId: uuid,
+    threadId: uuid.nullable().optional(),
+    subject: z.string().trim().max(200).nullable().optional(),
+    body: z.string().trim().min(1).max(4000),
+  });
+  const postMessage = async (req: Request) => {
+    const actor = actorOf(req);
+    limiter.hit(`msg:${actor.accountId}`, 30, 60 * 60000);
+    const input = parse(messageSchema, req.body);
+    await loadStudent(req, input.studentId);
+    const thread = await needStore().store.addMessage({
+      studentId: input.studentId,
+      threadId: input.threadId ?? null,
+      subject: input.subject ?? null,
+      body: input.body,
+      authorAccountId: actor.accountId,
+    });
+    await audit(req, "message.create", thread.id, { studentId: input.studentId });
+    return { thread };
+  };
+  app.get("/api/messages", authenticate(), wrap(async (req) => {
+    const studentId = parse(uuid, req.query.studentId);
+    await loadStudent(req, studentId);
+    return { threads: await needStore().store.listMessageThreads(studentId) };
+  }));
+  app.post("/api/messages", authenticate(), wrap(postMessage));
+
   app.post("/api/assignments/:id/complete", authenticate(), wrap(async (req) => {
     const id = parse(uuid, req.params.id);
     const { studentId, done } = parse(z.object({ studentId: uuid, done: z.boolean() }), req.body);
@@ -573,12 +602,27 @@ export function createApp(deps: Deps) {
     return { invoices: page.invoices.map(toInvoiceDTO), total: page.total };
   }));
 
-  // Invoice actions change live GoHighLevel records, so they stay off. "Paid" is only ever what GoHighLevel reports.
+  // Invoice buttons never call GoHighLevel. Preview safe mode logs them. Every other environment refuses.
   for (const action of ["send", "remind", "void", "mark-paid"]) {
-    teacher.post(`/invoices/:id/${action}`, () => {
-      throw new ApiError(501, "feature_not_enabled", "Manage this invoice in GoHighLevel for now.");
-    });
+    teacher.post(`/invoices/:id/${action}`, wrap(async (req) => {
+      const invoiceId = parse(z.string().trim().min(1).max(100), req.params.id);
+      const result = recordInvoiceAction({
+        enabled: config.features.invoiceActions,
+        safeMode: config.safeMode,
+        action,
+        invoiceId,
+      });
+      await audit(req, `invoice.${action}`, invoiceId, { suppressed: true });
+      return result;
+    }));
   }
+
+  teacher.get("/messages", wrap(async (req) => {
+    const studentId = req.query.studentId ? parse(uuid, req.query.studentId) : null;
+    if (studentId) await loadStudent(req, studentId);
+    return { threads: await needStore().store.listMessageThreads(studentId) };
+  }));
+  teacher.post("/messages", wrap(postMessage));
 
   teacher.post("/notes", wrap(async (req) => {
     const input = parse(noteSchema, req.body);

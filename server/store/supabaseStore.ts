@@ -1,6 +1,6 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
-import { ApiError } from "../http.js";
+import type { AssignedVideoDTO, InvitationDTO, MessageThreadDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
+import { ApiError, notFound } from "../http.js";
 import type { AccountRecord, AuthAdmin, InvitationRecord, PortalStore, StudentRecord } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
@@ -11,6 +11,10 @@ function must<T>(res: { data: T | null; error: { message: string } | null }): T 
 }
 
 const needsStudentEmailColumn = (error: { code?: string } | null) => error?.code === "PGRST204" || error?.code === "42703";
+const messagesMissing = (error: { code?: string; message?: string } | null) =>
+  !!error && (error.code === "42P01" || error.code === "PGRST205" || /message_threads|schema cache|does not exist/i.test(error.message ?? ""));
+const messagesMigrationError = (error: { code?: string; message?: string } | null) =>
+  messagesMissing(error) ? new ApiError(503, "migration_required", "Messages need a database update first (migration 0003).") : null;
 const studentMigrationError = () => new ApiError(503, "migration_required", "Student records need a database update first (migration 0002).");
 
 const toAccount = (r: any): AccountRecord => ({
@@ -335,6 +339,67 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     },
     async setAccountStatus(accountId, status) {
       return toAccount(must(await db.from("accounts").update({ status }).eq("id", accountId).select().single()));
+    },
+    async listMessageThreads(studentId) {
+      let query = db.from("message_threads").select("id,student_id,subject,created_at,students(full_name)").order("created_at", { ascending: false });
+      if (studentId) query = query.eq("student_id", studentId);
+      const threadRes = await query;
+      const missing = messagesMigrationError(threadRes.error);
+      if (missing) throw missing;
+      const threads = must(threadRes) as any[];
+      const ids = threads.map((t) => t.id);
+      let messages: any[] = [];
+      if (ids.length) {
+        const messageRes = await db.from("messages").select("id,thread_id,body,created_at,accounts(display_name,role)").in("thread_id", ids).order("created_at", { ascending: true });
+        const messageMissing = messagesMigrationError(messageRes.error);
+        if (messageMissing) throw messageMissing;
+        messages = must(messageRes) as any[];
+      }
+      const one = (value: any) => (Array.isArray(value) ? value[0] : value);
+      return threads.map((t): MessageThreadDTO => ({
+        id: t.id,
+        studentId: t.student_id,
+        studentName: one(t.students)?.full_name ?? "",
+        subject: t.subject,
+        createdAt: t.created_at,
+        messages: messages.filter((m) => m.thread_id === t.id).map((m) => ({
+          id: m.id,
+          body: m.body,
+          createdAt: m.created_at,
+          authorName: one(m.accounts)?.display_name ?? "Studio",
+          authorRole: one(m.accounts)?.role ?? null,
+        })),
+      }));
+    },
+    async addMessage(input) {
+      let threadId = input.threadId;
+      if (threadId) {
+        const existing = await db.from("message_threads").select("id,student_id").eq("id", threadId).maybeSingle();
+        const missing = messagesMigrationError(existing.error);
+        if (missing) throw missing;
+        if (existing.error) throw new Error(`store: ${existing.error.message}`);
+        if (!existing.data || existing.data.student_id !== input.studentId) throw notFound("That conversation wasn't found.");
+      } else {
+        const subject = input.subject?.trim();
+        if (!subject) throw new ApiError(400, "invalid_input", "Add a subject to start a conversation.");
+        const thread = await db.from("message_threads").insert({ student_id: input.studentId, subject }).select("id").single();
+        const missing = messagesMigrationError(thread.error);
+        if (missing) throw missing;
+        threadId = must(thread).id as string;
+      }
+      const saved = await db.from("messages").insert({
+        thread_id: threadId,
+        student_id: input.studentId,
+        author_account_id: input.authorAccountId,
+        body: input.body,
+      });
+      const missing = messagesMigrationError(saved.error);
+      if (missing) throw missing;
+      if (saved.error) throw new Error(`store: ${saved.error.message}`);
+      const threads = await this.listMessageThreads(input.studentId);
+      const thread = threads.find((t) => t.id === threadId);
+      if (!thread) throw notFound("That conversation wasn't found.");
+      return thread;
     },
     async lastInvoiceLinkSentAt(invoiceId) {
       const rows = must(await db.from("audit_log").select("created_at").eq("action", "invoice.link_sent").eq("target", invoiceId).order("created_at", { ascending: false }).limit(1)) as any[];

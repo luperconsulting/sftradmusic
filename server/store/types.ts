@@ -1,6 +1,7 @@
 import type {
   AssignedVideoDTO,
   InvitationDTO,
+  MessageThreadDTO,
   NoteDTO,
   PracticeAssignmentDTO,
   Role,
@@ -121,6 +122,10 @@ export interface PortalStore {
   createAccountForInvitation(invite: InvitationRecord, userId: string): Promise<void>;
   setAccountStatus(accountId: string, status: "active" | "suspended"): Promise<AccountRecord>;
   getAccount(accountId: string): Promise<AccountRecord | null>;
+
+  /** In-portal threads. studentId null lists every student (teacher only; the route checks the role). */
+  listMessageThreads(studentId: string | null): Promise<MessageThreadDTO[]>;
+  addMessage(input: { studentId: string; threadId: string | null; subject: string | null; body: string; authorAccountId: string }): Promise<MessageThreadDTO>;
 
   /** When a payment link was last sent, from the audit log, so the limit holds across server instances. */
   lastInvoiceLinkSentAt(invoiceId: string): Promise<string | null>;
