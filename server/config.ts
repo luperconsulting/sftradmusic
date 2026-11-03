@@ -1,6 +1,8 @@
 // Reads server configuration. Anything missing leaves that integration "not configured", and the routes
 // depending on it fail with 503. Nothing falls back to simulated data.
 import { featuresForEnv } from "./features.js";
+import { stripeKeysFromEnv } from "./integrations/stripeSetup.js";
+import { smtpFromEnv } from "./mail/referralMail.js";
 import { supabaseKeyKind } from "../shared/supabase-keys.js";
 
 export interface ServerConfig {
@@ -21,6 +23,10 @@ export interface ServerConfig {
   /** Used only while safe mode is on. Portal invitation email is limited to these addresses. */
   safeModeEmailAllowlist: string[];
   videoBucket: string;
+  /** Present only when both SMTP_USER and SMTP_PASS are set. The values are never sent to the browser. */
+  smtp: { user: string; pass: string } | null;
+  /** Present only for sk_test_ and pk_test_ keys. Live keys are ignored so safe mode cannot charge. */
+  stripe: { secretKey: string; publishableKey: string } | null;
   features: {
     packages: boolean;
     autopay: boolean;
@@ -79,6 +85,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     safeMode,
     safeModeEmailAllowlist: safeInviteAllowlist(env),
     videoBucket: env.SUPABASE_VIDEO_BUCKET || "lesson-videos",
+    smtp: smtpFromEnv(env),
+    stripe: stripeKeysFromEnv(env),
     // A passing flag can be true on Preview only. Production is always off. See server/features.ts.
     features: featuresForEnv(env),
   };

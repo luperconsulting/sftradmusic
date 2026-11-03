@@ -75,7 +75,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/overview") return { studentCount: 3, adultCount: 1, recentNotes: [{ ...note("n0", -1, "Sample draft note", "draft"), studentName: "Sample Student" }], recentVideos: [{ title: "Sample Video: Bowing", to: "Sample", assignedAt: iso(-3) }], invitations: [] };
   if (p === "/teacher/calendar") return { events: [2, 3, 5].map((d, i) => ({ id: `e${i}`, startTime: new Date(new Date(Number(new URLSearchParams(path.split("?")[1]).get("from"))).getTime() + (d * 24 + 16) * 36e5).toISOString(), endTime: "", title: "Lesson", address: i === 1 ? "Zoom" : "Music City SF", status: "confirmed", studentId: A, studentName: "Sample Student" })) };
   if (p === "/teacher/invoices") return { invoices: [invoice("i2", "2002", "sent", 200, -4), invoice("i1", "2001", "paid", 200, -10), invoice("i3", "2003", "draft", 100, 3)], total: 3 };
-  if (p === "/packages/purchase" && opts.method === "POST") return { ok: true, suppressed: true, lessonsAdded: 8, lessonsRemaining: 8, placeholder: true };
+  if (p === "/packages/purchase" && opts.method === "POST") return { ok: true, suppressed: true, lessonsAdded: 8, lessonsRemaining: 8, packageId: "8-lessons" };
   if (p === "/autopay" && opts.method === "POST") return { ok: true, suppressed: true, enabled: true, processor: "stripe-test-log" };
   if (p === "/referrals/invite" && opts.method === "POST") return { ok: true, suppressed: true, emailed: false, allowlisted: false, contactId: "sample" };
   if (p === "/referrals/apply" && opts.method === "POST") return { ok: true, suppressed: true, code: "SFTM-PORTAL00" };
@@ -83,7 +83,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/videos") return { videos: [video("v1", "Sample Video: Bowing", "Technique", false), video("v2", "Sample Video: Tune Walkthrough", "Repertoire", true)].map((v) => ({ ...v, assignedCount: 2 })) };
   if (p === "/teacher/assignments") return { assignments: [{ id: "a1", title: "Sample assignment", instructions: "Sample instructions.", dueDate: day(4), videoId: null, videoTitle: "Sample Video: Bowing", lessonDate: day(-3), students: [{ id: A, name: "Sample Student", completedAt: null }] }] };
   if (p === "/teacher/invitations") return { invitations: [{ id: "x1", name: "Sample Parent", email: "parent@example.com", studentName: "Sample Student", status: "accepted", method: "email", sentAt: iso(-3), expiresAt: null, accountId: null }, { id: "x2", name: "Another Parent", email: "another@example.com", studentName: "Example Student", status: "code_issued", method: "code", sentAt: iso(-1), expiresAt: iso(6), accountId: null }] };
-  if (p === "/teacher/settings") return { integrations: { supabase: false, ghl: false, storage: false } };
+  if (p === "/teacher/settings") return { integrations: { supabase: false, ghl: false, storage: false }, cardSaving: false };
   if (p.endsWith("/playback")) throw new Error("Sample mode: no video file is connected.");
   if (opts.method === "POST" || opts.method === "PUT") throw new Error("Sample mode: nothing is saved or sent.");
   throw new Error("Sample mode: not available.");
