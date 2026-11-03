@@ -4,6 +4,9 @@ import { describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import type { Application } from "express";
 import { createApp } from "../server/app";
+import { createCardSetup } from "../server/integrations/stripeSetup";
+import { referralEmailHtml, sendReferralEmail, REFERRAL_FROM } from "../server/mail/referralMail";
+import { LESSON_PACKAGES } from "../shared/lesson-packages";
 import { FUTURE, STUDENT_A, buildDeps, fakeGhl } from "./helpers";
 
 const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
@@ -86,9 +89,9 @@ describe("preview feature behavior", () => {
       audit: async (_actor: string, action: string, target: string, meta: Record<string, unknown> = {}) => { rows.push({ action, target, meta }); },
       listAudit: async (action: string) => rows.filter((row) => row.action === action).map((row) => ({ target: row.target, meta: row.meta })),
     }, fakeGhl({ sendInvoice }));
-    const res = await request(app).post("/api/packages/purchase").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, packageId: "placeholder-4" });
+    const res = await request(app).post("/api/packages/purchase").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, packageId: "4-lessons" });
     expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ suppressed: true, lessonsAdded: 4, lessonsRemaining: 4, placeholder: true });
+    expect(res.body).toMatchObject({ suppressed: true, lessonsAdded: 4, lessonsRemaining: 4, packageId: "4-lessons" });
     expect(sendInvoice).not.toHaveBeenCalled();
   });
 
@@ -137,5 +140,88 @@ describe("preview feature behavior", () => {
     live.config.features = previewFeatures;
     const refused = await request(createApp(live)).post("/api/lessons").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, startTime: FUTURE, location: "Zoom", repeatWeekly: true });
     expect(refused.status).toBe(501);
+  });
+
+  it("uses the real package names and highlights the 8-lesson package", () => {
+    expect(LESSON_PACKAGES.map((item) => [item.name, item.amountCents, item.popular])).toEqual([
+      ["4 lessons", 38000, false],
+      ["8 lessons", 72000, true],
+      ["12 lessons", 102000, false],
+    ]);
+    expect(LESSON_PACKAGES.some((item) => /placeholder/i.test(item.name))).toBe(false);
+  });
+
+  it("emails only the allowlist and never logs the SMTP password", async () => {
+    const delivered: { from: string; to: string; html: string }[] = [];
+    const logs: string[] = [];
+    const spy = vi.spyOn(console, "info").mockImplementation((message?: unknown) => { logs.push(String(message ?? "")); });
+    const missing = await sendReferralEmail({
+      to: "luperdev@gmail.com",
+      code: "SFTM-ABCDEF12",
+      appUrl: "https://preview.example.com",
+      safeMode: true,
+      allowlist: ["luperdev@gmail.com"],
+      smtp: null,
+    });
+    expect(missing).toMatchObject({ emailed: false, mailer: "not_configured" });
+    const blocked = await sendReferralEmail({
+      to: "friend@example.com",
+      code: "SFTM-ABCDEF12",
+      appUrl: "https://preview.example.com",
+      safeMode: true,
+      allowlist: ["luperdev@gmail.com"],
+      smtp: { user: "zane@sftradmusic.com", pass: "app-password-secret" },
+      deliver: async (message) => { delivered.push(message); },
+    });
+    expect(blocked.emailed).toBe(false);
+    expect(delivered).toHaveLength(0);
+    const sent = await sendReferralEmail({
+      to: "luperdev@gmail.com",
+      code: "SFTM-ABCDEF12",
+      appUrl: "https://preview.example.com",
+      safeMode: true,
+      allowlist: ["luperdev@gmail.com"],
+      smtp: { user: "zane@sftradmusic.com", pass: "app-password-secret" },
+      deliver: async (message) => { delivered.push(message); },
+    });
+    expect(sent).toMatchObject({ emailed: true, mailer: "smtp" });
+    expect(delivered[0]).toMatchObject({ from: REFERRAL_FROM, to: "luperdev@gmail.com" });
+    expect(delivered[0].html).toContain("SF TRAD MUSIC");
+    expect(delivered[0].html).toContain("#1D2A44");
+    expect(referralEmailHtml({ code: "SFTM-ABCDEF12", appUrl: "https://preview.example.com" })).toContain("SFTM-ABCDEF12");
+    expect(logs.join("\n")).not.toContain("app-password-secret");
+    expect(logs.join("\n")).not.toContain("zane@sftradmusic.com");
+    spy.mockRestore();
+  });
+
+  it("opens Stripe setup mode and does not charge", async () => {
+    const setupIntents = { create: vi.fn(async () => ({ id: "seti_test" })) };
+    const sessions = { create: vi.fn(async (input: { mode: string }) => ({ id: "cs_test", url: "https://checkout.stripe.com/c/pay/cs_test", ...input })) };
+    const stripe = {
+      customers: { create: vi.fn(async () => ({ id: "cus_test" })) },
+      setupIntents,
+      checkout: { sessions },
+    };
+    const ready = await createCardSetup({
+      keys: { secretKey: "sk_test_123", publishableKey: "pk_test_123" },
+      safeMode: true,
+      studentId: STUDENT_A,
+      appUrl: "https://preview.example.com",
+      stripe,
+    });
+    expect(ready).toMatchObject({ available: true, charged: false, setupIntentId: "seti_test", url: "https://checkout.stripe.com/c/pay/cs_test" });
+    expect(sessions.create).toHaveBeenCalledWith(expect.objectContaining({ mode: "setup", customer: "cus_test" }));
+    expect(setupIntents.create).toHaveBeenCalledWith(expect.objectContaining({ usage: "off_session", customer: "cus_test" }));
+    const missing = await createCardSetup({ keys: null, safeMode: true, studentId: STUDENT_A, appUrl: "https://preview.example.com", stripe });
+    expect(missing).toMatchObject({ available: false, charged: false });
+    const live = await createCardSetup({
+      keys: { secretKey: "sk_live_secret", publishableKey: "pk_live_secret" },
+      safeMode: true,
+      studentId: STUDENT_A,
+      appUrl: "https://preview.example.com",
+      stripe,
+    });
+    expect(live.available).toBe(false);
+    expect(live.charged).toBe(false);
   });
 });

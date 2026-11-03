@@ -254,9 +254,9 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 | `POST /api/videos/:id/watched` | family | Record watched |
 | `POST /api/assignments/:id/complete` | family | Completion tracking |
 | `POST /api/teacher/invoices/:id/send`, `/remind`, `/void`, `/mark-paid` | teacher | Preview safe mode logs only and returns `suppressed: true`. Otherwise `501`. Never charges. |
-| `POST /api/packages/purchase` | payer, teacher | Preview safe mode records a placeholder credit. No Stripe or GoHighLevel charge. Otherwise `501`. |
-| `POST /api/autopay` | payer, teacher | Preview safe mode logs a Stripe test-mode preference. No card is stored and nothing is charged. Otherwise `501`. |
-| `POST /api/referrals/invite`, `/api/referrals/apply` | family, teacher | Preview safe mode creates a portal-test contact. Emails are logged, not sent. Otherwise `501`. |
+| `POST /api/packages/purchase` | payer, teacher | Preview safe mode records a 4, 8, or 12 lesson package. Nothing is charged. Otherwise `501`. |
+| `POST /api/autopay` | payer, teacher | Preview safe mode opens Stripe Checkout in setup mode when `sk_test_` and `pk_test_` keys are set. Nothing is charged. Otherwise the preference is saved and the teacher sees that card saving is unavailable. |
+| `POST /api/referrals/invite`, `/api/referrals/apply` | family, teacher | Preview safe mode creates a portal-test contact. SMTP mail goes only to `SAFE_MODE_EMAIL_ALLOWLIST`. Missing SMTP is logged. Otherwise `501`. |
 | `POST /api/lessons` with `repeatWeekly: true` | family | Preview safe mode books eight lessons. `toNotify` is false. Otherwise `501`. |
 | `GET /api/teacher/students`, `/students/:id`, `/overview`, `/calendar`, `/invoices`, `/settings` | teacher | Studio data |
 | `POST /api/teacher/notes`, `PUT /notes/:id`, `POST /notes/:id/publish` | teacher | Notes |

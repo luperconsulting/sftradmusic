@@ -9,6 +9,7 @@ import { ApiError, errorHandler, forbidden, notConfigured, notFound, parse, uuid
 import { memoryRateLimiter, type RateLimiter } from "./rateLimit.js";
 import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, canPayFor, type Actor } from "./auth/policy.js";
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
+import { createCardSetup } from "./integrations/stripeSetup.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { recordInvoiceAction } from "./services/invoiceActions.js";
 import { bookingSchema, createLessonBooking, createWeeklyLessons, rescheduleLesson } from "./services/booking.js";
@@ -457,7 +458,10 @@ export function createApp(deps: Deps) {
     const input = parse(z.object({ studentId: uuid, enabled: z.boolean() }), req.body);
     if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
     await loadStudent(req, input.studentId);
-    return saveAutopayPreference(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, enabled: input.enabled, safeMode: true, featureOn: true });
+    const saved = await saveAutopayPreference(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, enabled: input.enabled, safeMode: true, featureOn: true });
+    if (!input.enabled) return { ...saved, charged: false as const, cardSaving: !!config.stripe, checkoutUrl: null };
+    const setup = await createCardSetup({ keys: config.stripe, safeMode: true, studentId: input.studentId, appUrl: config.appUrl });
+    return { ...saved, charged: false as const, cardSaving: setup.available, checkoutUrl: setup.url, setupIntentId: setup.setupIntentId };
   }));
 
   app.get("/api/referrals", authenticate(), wrap(async (req) => {
@@ -486,6 +490,8 @@ export function createApp(deps: Deps) {
       enabled: true,
       safeMode: true,
       allowlist: config.safeModeEmailAllowlist,
+      appUrl: config.appUrl,
+      smtp: config.smtp,
     });
   }));
 
@@ -826,7 +832,7 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  teacher.get("/settings", wrap(async () => ({ integrations: { supabase: !!deps.store, ghl: !!deps.ghl, storage: !!deps.store } })));
+  teacher.get("/settings", wrap(async () => ({ integrations: { supabase: !!deps.store, ghl: !!deps.ghl, storage: !!deps.store }, cardSaving: !!config.stripe })));
 
   app.use("/api/teacher", teacher);
 
