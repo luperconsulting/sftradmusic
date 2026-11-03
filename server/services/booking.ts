@@ -92,6 +92,9 @@ export async function rescheduleLesson(
   const current = await ghl.getAppointment(eventId);
   // The appointment must belong to this student, on the lesson calendar. Client-supplied IDs prove nothing.
   if (current.contactId !== student.ghlContactId || current.calendarId !== ghl.config.lessonCalendarId) throw forbidden();
+  if (!(instant(current.startTime) > Date.now())) {
+    throw new ApiError(409, "lesson_past", "That lesson has already happened. Book a new one instead.");
+  }
   if (instant(current.startTime) - Date.now() <= RESCHEDULE_CUTOFF_MS) {
     throw new ApiError(409, "reschedule_closed", "Reschedules close 24 hours before a lesson. Contact Zane if something urgent comes up.");
   }

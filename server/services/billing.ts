@@ -15,7 +15,7 @@ export async function listAllInvoices(ghl: GhlClient, contactId: string): Promis
   for (let offset = 0; offset < 5000; offset += limit) {
     const page = await ghl.listInvoices({ contactId, limit, offset });
     // Re-check ownership on every row: an ignored filter must never show another family's invoice.
-    out.push(...page.invoices.map(toInvoiceDTO).filter((i) => i.contactId === contactId));
+    out.push(...page.invoices.map((raw) => toInvoiceDTO(raw, ghl.config.safeMode === true)).filter((i) => i.contactId === contactId));
     if (page.invoices.length < limit) break;
   }
   return out;
@@ -30,6 +30,7 @@ export async function getBilling(ghl: GhlClient, payerContactId: string): Promis
     openInvoices,
     history: visible,
     bookingBlocked: openInvoices.length > 0,
+    paymentsOpen: ghl.config.safeMode !== true,
   };
 }
 
@@ -46,7 +47,7 @@ export async function sendInvoicePaymentLink(
   invoiceId: string,
   lastSentAt: (invoiceId: string) => Promise<string | null>,
 ) {
-  const invoice = toInvoiceDTO(await ghl.getInvoice(invoiceId));
+  const invoice = toInvoiceDTO(await ghl.getInvoice(invoiceId), ghl.config.safeMode === true);
   if (!payerContactIds.includes(invoice.contactId)) throw forbidden();
   if (!isOutstanding(invoice)) throw new ApiError(409, "invoice_not_payable", "This invoice has nothing left to pay.");
   const senderId = ghl.config.invoiceSenderUserId;

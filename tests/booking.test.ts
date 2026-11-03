@@ -82,6 +82,28 @@ describe("rescheduling", () => {
     expect(res.body.error.code).toBe("reschedule_closed");
   });
 
+  it("refuses a past lesson and does not create a new appointment", async () => {
+    const past = new Date(Date.now() - 86400000).toISOString();
+    const updateAppointment = vi.fn();
+    const createAppointment = vi.fn();
+    const ghl = fakeGhl({ updateAppointment, createAppointment, getAppointment: async () => ({ id: "ev", calendarId: "cal", contactId: "contactA", startTime: past, endTime: past }) });
+    const res = await move(createApp(buildDeps({ parent }, ghl)));
+    expect(res.status).toBe(409);
+    expect(res.body.error.code).toBe("lesson_past");
+    expect(updateAppointment).not.toHaveBeenCalled();
+    expect(createAppointment).not.toHaveBeenCalled();
+  });
+
+  it("moves the same appointment instead of booking a second one", async () => {
+    const updateAppointment = vi.fn(async (id: string) => ({ id, calendarId: "cal", contactId: "contactA", startTime: FUTURE, endTime: FUTURE }));
+    const createAppointment = vi.fn();
+    const ghl = fakeGhl({ updateAppointment, createAppointment, getAppointment: async () => ({ id: "ev", calendarId: "cal", contactId: "contactA", startTime: FUTURE, endTime: FUTURE }), getFreeSlots: async () => ({ day: [FUTURE] }), listInvoices: async () => ({ invoices: [], total: 0 }) });
+    const res = await move(createApp(buildDeps({ parent }, ghl)));
+    expect(res.status).toBe(200);
+    expect(updateAppointment).toHaveBeenCalledWith("ev", expect.objectContaining({ startTime: FUTURE }));
+    expect(createAppointment).not.toHaveBeenCalled();
+  });
+
   it("refuses an appointment belonging to another family", async () => {
     const updateAppointment = vi.fn();
     const ghl = fakeGhl({ updateAppointment, getAppointment: async () => ({ id: "ev", calendarId: "cal", contactId: "contactB", startTime: FUTURE, endTime: FUTURE }) });

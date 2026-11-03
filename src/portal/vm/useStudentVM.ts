@@ -50,7 +50,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const [menuOpen, setMenuOpen] = useState(false);
   const [dialog, setDialog] = useState<{ kind: string; data: any } | null>(null);
   const [form, setForm] = useState<any>({});
-  const [openNote, setOpenNote] = useState(0);
+  const [openNote, setOpenNote] = useState(-1);
+  const [refNotice, setRefNotice] = useState("");
   const [cat, setCat] = useState("All");
   const [invoiceId, setInvoiceId] = useState<string | null>(null);
   const [paying, setPaying] = useState(false);
@@ -136,10 +137,18 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     setDialog({ kind: "book", data: {} });
     setMenuOpen(false);
   };
+  const openRescheduleFlow = () => {
+    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    setRsLesson(null);
+    setBkMonth(0);
+    setDialog({ kind: "reschedule", data: {} });
+    setMenuOpen(false);
+  };
   const openReschedule = (lesson?: LessonDTO) => {
     if (readOnly) return flash("Actions are disabled in teacher preview.");
-    if (!lesson) return;
+    if (!lesson || new Date(lesson.startTime).getTime() <= Date.now()) return flash("That lesson has already happened. Book a new one instead.");
     setRsLesson(lesson);
+    setRepeatWeekly(false);
     setBkMonth(0);
     setDialog({ kind: "book", data: {} });
   };
@@ -205,11 +214,19 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     note: "Free to reschedule until 24 hours before the lesson.",
     current: rsLesson ? `${fullDate(rsLesson.startTime)} at ${clock(rsLesson.startTime)}` : "",
     open: () => openReschedule(kidNextLesson),
+    choices: (data?.upcoming ?? []).filter((lesson) => new Date(lesson.startTime).getTime() > Date.now() && lesson.status !== "cancelled").map((lesson) => ({
+      id: lesson.id,
+      date: fullDate(lesson.startTime),
+      time: `${clock(lesson.startTime)} – ${clock(lesson.endTime)}`,
+      loc: lesson.locationLabel,
+      pick: () => openReschedule(lesson),
+    })),
   };
 
-  const notes = (data?.notes ?? []).map((n, i) => ({
+  const notes = [...(data?.notes ?? [])].sort((a, b) => b.lessonDate.localeCompare(a.lessonDate)).map((n, i) => ({
     ...n,
     date: fmtDay(n.lessonDate),
+    preview: (n.summary || n.title || "").split("\n")[0].slice(0, 140),
     open: openNote === i,
     caret: openNote === i ? "ph ph-caret-up" : "ph ph-caret-down",
     toggle: () => setOpenNote(openNote === i ? -1 : i),
@@ -345,10 +362,10 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const d = dialog, dk = d?.kind ?? "", dd = d?.data ?? {};
   const dv = dd.video ? { id: dd.video.id, title: dd.video.title, cat: dd.video.category, desc: dd.video.description, dur: dd.video.durationLabel, assigned: fmt(dd.video.assignedAt, { month: "short", day: "numeric" }), watchedMarked: !readOnly } : {};
   const dn = dd.note ?? {};
-  const dlgTitles: any = { enroll2fa: "Security", autopay: "Set up auto-pay", book: rsLesson ? "Reschedule your lesson" : "Book a lesson with Zane", pay: `Pay invoice #${firstOpen?.number ?? ""}`, invoice: selected ? `Invoice #${selected.number}` : "Invoices", schedule: `${firstName}'s upcoming lessons`, video: dv.title, note: `${dn.date ?? ""} — ${firstName}`, family: acctMe?.isFamily ? "Family & profile" : "Profile", recovery: "Recovery codes", packages: pkgStep === 2 ? "Review and pay" : "Buy a lesson package" };
-  const dlgKickers: any = { enroll2fa: "Security", autopay: "Recurring payments", book: "Scheduling", pay: "Secure payment", invoice: "Billing", schedule: "Schedule", video: dv.cat, note: "Teacher note", family: acct.label, recovery: "Security", packages: "Lesson packages" };
+  const dlgTitles: any = { enroll2fa: "Security", autopay: "Set up auto-pay", reschedule: "Move a lesson", book: rsLesson ? "Reschedule your lesson" : "Book a lesson with Zane", pay: `Pay invoice #${firstOpen?.number ?? ""}`, invoice: selected ? `Invoice #${selected.number}` : "Invoices", schedule: `${firstName}'s upcoming lessons`, video: dv.title, note: `${dn.date ?? ""} — ${firstName}`, family: acctMe?.isFamily ? "Family & profile" : "Profile", recovery: "Recovery codes", packages: pkgStep === 2 ? "Review and pay" : "Buy a lesson package" };
+  const dlgKickers: any = { enroll2fa: "Security", autopay: "Recurring payments", reschedule: "Scheduling", book: "Scheduling", pay: "Secure payment", invoice: "Billing", schedule: "Schedule", video: dv.cat, note: "Teacher note", family: acct.label, recovery: "Security", packages: "Lesson packages" };
   const dlg: any = { open: !!d, width: dk === "book" ? "860px" : dk === "note" ? "640px" : dk === "packages" ? "560px" : "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
+  ["book", "reschedule", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
 
   const features = me?.features;
   const autopayOn = !!data?.autopayEnabled;
@@ -389,10 +406,12 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     paymentHistory: allInvoices.filter((i) => i.status === "paid" || i.amountPaid > 0).map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.amountPaid || i.total), status: statusWord[i.status] ?? i.status })),
     referralCode: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "",
     f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),
-    openBook, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
+    openBook, openReschedule: openRescheduleFlow, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
     openAutopay: () => open("autopay"), openRecovery: () => open("recovery"),
     closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
-    payUrl: "#", payNow, autopayUrl: "#",
+    payUrl: selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? selected.payUrl : "",
+    payNote: !billing ? "" : billing.paymentsOpen === false ? "Payments aren't taken in preview." : (selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? "" : "This invoice doesn't include a payment link yet."),
+    payNow, autopayUrl: "#",
     enableAutopay: (e: any) => {
       e?.preventDefault?.();
       if (readOnly) return flash("Actions are disabled in teacher preview.");
@@ -436,7 +455,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     })),
     pkgTargets: [],
     ref: {
-      inactive: false, code: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "SFTM-PORTAL", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
+      inactive: false, notice: refNotice, code: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "SFTM-PORTAL", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
       setEmail: (e: any) => setRefEmail(e.target.value),
       copyCode: () => { const code = student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : ""; copy(code); flash("Referral code copied."); },
       copyLink: () => { copy(`${window.location.origin}/invite`); flash("Portal link copied."); },
@@ -444,7 +463,15 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
         if (readOnly) return flash("Actions are disabled in teacher preview.");
         if (!student || !refEmail.trim()) return flash("Enter an email address.");
         void api<{ allowlisted: boolean; emailed: boolean }>("/referrals/invite", { method: "POST", body: { email: refEmail.trim(), studentId: student.id } })
-          .then((res) => flash(res.emailed ? `Referral email sent to ${refEmail}.` : `Referral for ${refEmail} was logged. No email was sent.`))
+          .then((res) => {
+            const notice = res.emailed
+              ? `Referral email sent to ${refEmail}.`
+              : res.allowlisted
+                ? "The referral was logged, not emailed. SMTP isn't set on this preview yet."
+                : "The referral was logged. Safe mode only emails the allowlist.";
+            setRefNotice(notice);
+            flash(notice);
+          })
           .catch((err) => flash(errorText(err)));
       },
     },

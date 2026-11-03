@@ -96,6 +96,8 @@ export interface InvoiceDTO {
   contactId: string;
   contactName: string;
   lines: { label: string; amount: number }[];
+  /** https payment link from GoHighLevel. Null when the invoice has none, or when safe mode is on. */
+  payUrl: string | null;
 }
 
 export interface BillingDTO {
@@ -103,6 +105,8 @@ export interface BillingDTO {
   openInvoices: InvoiceDTO[];
   history: InvoiceDTO[];
   bookingBlocked: boolean;
+  /** False in safe mode, so the portal does not open a live checkout. */
+  paymentsOpen: boolean;
 }
 
 export interface DashboardResponse {

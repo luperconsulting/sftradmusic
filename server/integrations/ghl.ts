@@ -210,7 +210,16 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
   };
 }
 
-export function toInvoiceDTO(raw: any): InvoiceDTO {
+/** A real https payment link from GoHighLevel. Safe mode returns null so preview cannot charge. */
+export function invoicePayUrl(raw: any, safeMode: boolean): string | null {
+  if (safeMode) return null;
+  for (const value of [raw?.paymentLink, raw?.invoiceUrl, raw?.publicInvoiceUrl, raw?.url]) {
+    if (typeof value === "string" && /^https:\/\//i.test(value)) return value;
+  }
+  return null;
+}
+
+export function toInvoiceDTO(raw: any, safeMode = false): InvoiceDTO {
   return {
     id: raw._id,
     number: String(raw.invoiceNumber ?? ""),
@@ -226,6 +235,7 @@ export function toInvoiceDTO(raw: any): InvoiceDTO {
     contactId: raw.contactDetails?.id ?? "",
     contactName: raw.contactDetails?.name ?? "",
     lines: (raw.invoiceItems ?? []).map((i: any) => ({ label: i.name ?? "Item", amount: Number(i.amount ?? 0) * Number(i.qty ?? 1) })),
+    payUrl: invoicePayUrl(raw, safeMode),
   };
 }
 

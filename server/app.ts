@@ -268,7 +268,7 @@ export function createApp(deps: Deps) {
   }));
 
   // ---- signed-in, any role ---------------------------------------------------------------------------------
-  app.get("/api/me", authenticate(true), wrap(async (req) => {
+  app.get("/api/me", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
     const { store } = needStore();
     const account = (await store.getAccount(actor.accountId))!;
@@ -642,7 +642,7 @@ export function createApp(deps: Deps) {
   teacher.get("/invoices", wrap(async () => {
     const ghl = needGhl();
     const page = await ghl.listInvoices({ limit: 100, offset: 0 });
-    return { invoices: page.invoices.map(toInvoiceDTO), total: page.total };
+    return { invoices: page.invoices.map((raw) => toInvoiceDTO(raw, ghl.config.safeMode === true)), total: page.total };
   }));
 
   // Invoice buttons never call GoHighLevel. Preview safe mode logs them. Every other environment refuses.
@@ -832,7 +832,7 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  teacher.get("/settings", wrap(async () => ({ integrations: { supabase: !!deps.store, ghl: !!deps.ghl, storage: !!deps.store }, cardSaving: !!config.stripe })));
+  teacher.get("/settings", wrap(async () => ({ integrations: { supabase: !!deps.store, ghl: !!deps.ghl, storage: !!deps.store }, cardSaving: !!config.stripe, referralMail: !!config.smtp })));
 
   app.use("/api/teacher", teacher);
 
