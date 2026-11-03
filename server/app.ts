@@ -11,7 +11,9 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createGhlClient, toInvoiceDTO, toLessonDTO, type GhlClient } from "./integrations/ghl.js";
 import { getBilling, isOutstanding, sendInvoicePaymentLink } from "./services/billing.js";
 import { recordInvoiceAction } from "./services/invoiceActions.js";
-import { bookingSchema, createLessonBooking, rescheduleLesson } from "./services/booking.js";
+import { bookingSchema, createLessonBooking, createWeeklyLessons, rescheduleLesson } from "./services/booking.js";
+import { applyReferralCode, autopayEnabledFor, PACKAGE_PURCHASE, purchaseLessonPackage, referralCodeFor, saveAutopayPreference, sendReferral, AUTOPAY_SAVE, assertPreviewSafe } from "./services/previewFeatures.js";
+import { packageLessonsFor } from "../shared/lesson-packages.js";
 import { isEmailOtp } from "../shared/email-otp.js";
 import { assertPortalInviteEmail, hashCredential, INVITE_CODE_TTL_MS, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInvitePage } from "./services/invitations.js";
 import { verifyWebhookSignature } from "./webhooks.js";
@@ -306,6 +308,8 @@ export function createApp(deps: Deps) {
       videos: [],
       assignments: [],
       billing: null,
+      packageLessons: 0,
+      autopayEnabled: false,
       lessonsAvailable: !!deps.ghl,
       canBook: false,
       canPay: false,
@@ -313,10 +317,12 @@ export function createApp(deps: Deps) {
     };
     if (!student) return empty;
     if (isTeacher) await audit(req, "teacher.preview_student", student.id);
-    const [notes, videos, assignments] = await Promise.all([
+    const [notes, videos, assignments, purchases, autopayRows] = await Promise.all([
       store.listNotes(student.id, { publishedOnly: true }),
       store.listAssignedVideos(student.id),
       store.listAssignments(student.id),
+      store.listAudit(PACKAGE_PURCHASE),
+      store.listAudit(AUTOPAY_SAVE),
     ]);
     let upcoming: DashboardResponse["upcoming"] = [];
     let history: DashboardResponse["history"] = [];
@@ -347,6 +353,8 @@ export function createApp(deps: Deps) {
       notes,
       videos,
       assignments,
+      packageLessons: packageLessonsFor(purchases, student.id),
+      autopayEnabled: autopayEnabledFor(autopayRows, student.id),
       // Invoices can include siblings and the payer's details, so only payers and the teacher receive them.
       billing: isTeacher || canPayFor(actor, student.id) ? billing : null,
       lessonsAvailable,
@@ -371,6 +379,13 @@ export function createApp(deps: Deps) {
     limiter.hit(`book:${actor.accountId}`, 20, 60 * 60000);
     const input = parse(bookingSchema, req.body);
     const student = await loadStudent(req, input.studentId);
+    if (input.repeatWeekly) {
+      assertPreviewSafe(config.features.recurring, config.safeMode);
+      const ghl = needGhl();
+      const events = await createWeeklyLessons(ghl, actor, student, input);
+      await audit(req, "lesson.recurring", student.id, { count: events.length, suppressed: true });
+      return { id: events[0]?.id ?? null, startTime: input.startTime, count: events.length, suppressed: true };
+    }
     const event = await createLessonBooking(needGhl(), actor, student, input);
     return { id: event.id, startTime: event.startTime ?? input.startTime };
   }));
@@ -418,34 +433,6 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  const messageSchema = z.object({
-    studentId: uuid,
-    threadId: uuid.nullable().optional(),
-    subject: z.string().trim().max(200).nullable().optional(),
-    body: z.string().trim().min(1).max(4000),
-  });
-  const postMessage = async (req: Request) => {
-    const actor = actorOf(req);
-    limiter.hit(`msg:${actor.accountId}`, 30, 60 * 60000);
-    const input = parse(messageSchema, req.body);
-    await loadStudent(req, input.studentId);
-    const thread = await needStore().store.addMessage({
-      studentId: input.studentId,
-      threadId: input.threadId ?? null,
-      subject: input.subject ?? null,
-      body: input.body,
-      authorAccountId: actor.accountId,
-    });
-    await audit(req, "message.create", thread.id, { studentId: input.studentId });
-    return { thread };
-  };
-  app.get("/api/messages", authenticate(), wrap(async (req) => {
-    const studentId = parse(uuid, req.query.studentId);
-    await loadStudent(req, studentId);
-    return { threads: await needStore().store.listMessageThreads(studentId) };
-  }));
-  app.post("/api/messages", authenticate(), wrap(postMessage));
-
   app.post("/api/assignments/:id/complete", authenticate(), wrap(async (req) => {
     const id = parse(uuid, req.params.id);
     const { studentId, done } = parse(z.object({ studentId: uuid, done: z.boolean() }), req.body);
@@ -455,12 +442,60 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  // Financial features exist in the UI only until their backend behavior is reviewed.
-  for (const path of ["/api/packages/purchase", "/api/autopay", "/api/referrals/invite", "/api/referrals/apply"]) {
-    app.post(path, authenticate(), () => {
-      throw new ApiError(501, "feature_not_enabled", "This option isn't switched on yet.");
+  app.post("/api/packages/purchase", authenticate(), wrap(async (req) => {
+    assertPreviewSafe(config.features.packages, config.safeMode);
+    const actor = actorOf(req);
+    const input = parse(z.object({ studentId: uuid, packageId: z.string().trim().min(1).max(80) }), req.body);
+    if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
+    await loadStudent(req, input.studentId);
+    return purchaseLessonPackage(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, packageId: input.packageId, enabled: true, safeMode: true });
+  }));
+
+  app.post("/api/autopay", authenticate(), wrap(async (req) => {
+    assertPreviewSafe(config.features.autopay, config.safeMode);
+    const actor = actorOf(req);
+    const input = parse(z.object({ studentId: uuid, enabled: z.boolean() }), req.body);
+    if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
+    await loadStudent(req, input.studentId);
+    return saveAutopayPreference(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, enabled: input.enabled, safeMode: true, featureOn: true });
+  }));
+
+  app.get("/api/referrals", authenticate(), wrap(async (req) => {
+    const actor = actorOf(req);
+    const studentId = parse(uuid, req.query.studentId);
+    await loadStudent(req, studentId);
+    const invites = (await needStore().store.listAudit("referral.invite")).filter((row) => row.target === studentId);
+    return { code: referralCodeFor(studentId), invites: invites.map((row) => ({ email: String(row.meta.email ?? ""), allowlisted: row.meta.allowlisted === true })) };
+  }));
+
+  app.post("/api/referrals/invite", authenticate(), wrap(async (req) => {
+    assertPreviewSafe(config.features.referrals, config.safeMode);
+    const actor = actorOf(req);
+    const input = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), studentId: uuid.optional() }), req.body);
+    const studentId = input.studentId ?? null;
+    if (actor.role !== "teacher") {
+      if (!studentId) throw new ApiError(400, "invalid_input", "Choose a student for this referral.");
+      await loadStudent(req, studentId);
+    } else if (studentId) {
+      await loadStudent(req, studentId);
+    }
+    return sendReferral(needStore().store, needGhl(), {
+      actorAccountId: actor.accountId,
+      email: input.email,
+      studentId,
+      enabled: true,
+      safeMode: true,
+      allowlist: config.safeModeEmailAllowlist,
     });
-  }
+  }));
+
+  app.post("/api/referrals/apply", authenticate(), wrap(async (req) => {
+    assertPreviewSafe(config.features.referrals, config.safeMode);
+    const actor = actorOf(req);
+    const input = parse(z.object({ studentId: uuid, code: z.string().trim().min(4).max(40) }), req.body);
+    await loadStudent(req, input.studentId);
+    return applyReferralCode(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, code: input.code, enabled: true, safeMode: true });
+  }));
 
   // ---- teacher ---------------------------------------------------------------------------------------------
   const teacher = express.Router();
@@ -468,7 +503,7 @@ export function createApp(deps: Deps) {
 
   teacher.get("/students", wrap(async () => {
     const { store } = needStore();
-    const [students, counts, accounts] = await Promise.all([store.listStudents(), store.studentCounts(), store.studentAccounts()]);
+    const [students, counts, accounts, purchases] = await Promise.all([store.listStudents(), store.studentCounts(), store.studentAccounts(), store.listAudit(PACKAGE_PURCHASE)]);
     let nextByContact: Record<string, string> = {};
     if (deps.ghl) {
       const now = Date.now();
@@ -484,6 +519,7 @@ export function createApp(deps: Deps) {
       noteCount: counts[s.id]?.notes ?? 0,
       videoCount: counts[s.id]?.videos ?? 0,
       assignmentCount: counts[s.id]?.assignments ?? 0,
+      packageLessons: packageLessonsFor(purchases, s.id),
       accountId: accounts[s.id]?.accountId ?? null,
       portalStatus: accounts[s.id]?.status ?? "none",
       transferPending: false,
@@ -553,10 +589,11 @@ export function createApp(deps: Deps) {
   teacher.get("/students/:id", wrap(async (req) => {
     const student = await loadStudent(req, parse(uuid, req.params.id));
     const { store } = needStore();
-    const [notes, videos, assignments] = await Promise.all([
+    const [notes, videos, assignments, purchases] = await Promise.all([
       store.listNotes(student.id, { publishedOnly: false }),
       store.listAssignedVideos(student.id),
       store.listAssignments(student.id),
+      store.listAudit(PACKAGE_PURCHASE),
     ]);
     let lessons: LessonDTO[] | null = null;
     let billing: BillingDTO | null = null;
@@ -567,7 +604,7 @@ export function createApp(deps: Deps) {
         getBilling(ghl, student.billingContactId).catch(() => null),
       ]);
     }
-    return { student: publicStudent(student), notes, videos, assignments, lessons, billing };
+    return { student: publicStudent(student), notes, videos, assignments, lessons, billing, packageLessons: packageLessonsFor(purchases, student.id) };
   }));
 
   teacher.get("/overview", wrap(async () => {
@@ -616,13 +653,6 @@ export function createApp(deps: Deps) {
       return result;
     }));
   }
-
-  teacher.get("/messages", wrap(async (req) => {
-    const studentId = req.query.studentId ? parse(uuid, req.query.studentId) : null;
-    if (studentId) await loadStudent(req, studentId);
-    return { threads: await needStore().store.listMessageThreads(studentId) };
-  }));
-  teacher.post("/messages", wrap(postMessage));
 
   teacher.post("/notes", wrap(async (req) => {
     const input = parse(noteSchema, req.body);

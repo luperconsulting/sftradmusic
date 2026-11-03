@@ -253,10 +253,11 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 | `GET /api/videos/:id/playback` | assigned family, teacher | Signed URL, 15 minutes |
 | `POST /api/videos/:id/watched` | family | Record watched |
 | `POST /api/assignments/:id/complete` | family | Completion tracking |
-| `GET,POST /api/messages` | family for their student; teacher | In-portal threads. No email or SMS. Needs migration `0003_messages.sql`. |
-| `GET,POST /api/teacher/messages` | teacher | Every student's threads. No email or SMS. |
 | `POST /api/teacher/invoices/:id/send`, `/remind`, `/void`, `/mark-paid` | teacher | Preview safe mode logs only and returns `suppressed: true`. Otherwise `501`. Never charges. |
-| `POST /api/packages/purchase`, `/api/autopay`, `/api/referrals/*` | any | `501`, not enabled |
+| `POST /api/packages/purchase` | payer, teacher | Preview safe mode records a placeholder credit. No Stripe or GoHighLevel charge. Otherwise `501`. |
+| `POST /api/autopay` | payer, teacher | Preview safe mode logs a Stripe test-mode preference. No card is stored and nothing is charged. Otherwise `501`. |
+| `POST /api/referrals/invite`, `/api/referrals/apply` | family, teacher | Preview safe mode creates a portal-test contact. Emails are logged, not sent. Otherwise `501`. |
+| `POST /api/lessons` with `repeatWeekly: true` | family | Preview safe mode books eight lessons. `toNotify` is false. Otherwise `501`. |
 | `GET /api/teacher/students`, `/students/:id`, `/overview`, `/calendar`, `/invoices`, `/settings` | teacher | Studio data |
 | `POST /api/teacher/notes`, `PUT /notes/:id`, `POST /notes/:id/publish` | teacher | Notes |
 | `GET,POST /api/teacher/videos`, `/videos/url`, `/videos/upload`, `PUT /videos/:id`, `GET,PUT /videos/:id/assignees` | teacher | Library |

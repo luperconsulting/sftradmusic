@@ -40,7 +40,7 @@ export default function ResetPasswordScreen() {
   const save = async () => {
     if (pw.length < 12) return setError("Your password needs at least 12 characters.");
     if (pw !== confirm) return setError("Those passwords don't match.");
-    if (!supabase) return setError("Password reset isn't connected yet.");
+    if (!supabase) return setError("Password reset needs the Supabase settings for this site.");
     setBusy(true);
     if (needsCode) {
       const factors = await supabase.auth.mfa.listFactors();

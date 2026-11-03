@@ -9,8 +9,8 @@ import { clock, copy, fmt, fmtDay, initialsOf, TZ, todayLabel, useToast, useView
 import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
-const TITLES: Record<string, string> = { overview: "Overview", calendar: "Calendar", invoices: "Invoices", students: "Students", messages: "Messages", profile: "Student profile", notes: "Teaching Notes", videos: "Video Library", assignments: "Assignments", invitations: "Account Invitations", settings: "Settings" };
-const NAV = [["overview", "Overview", "ph ph-squares-four"], ["calendar", "Calendar", "ph ph-calendar-blank"], ["invoices", "Invoices", "ph ph-receipt"], ["students", "Students", "ph ph-users"], ["messages", "Messages", "ph ph-chat-circle"], ["notes", "Teaching Notes", "ph ph-note-pencil"], ["videos", "Video Library", "ph ph-video"], ["assignments", "Assignments", "ph ph-list-checks"], ["invitations", "Account Invitations", "ph ph-envelope-simple"], ["settings", "Settings", "ph ph-gear"]];
+const TITLES: Record<string, string> = { overview: "Overview", calendar: "Calendar", invoices: "Invoices", students: "Students", profile: "Student profile", notes: "Teaching Notes", videos: "Video Library", assignments: "Assignments", invitations: "Account Invitations", settings: "Settings" };
+const NAV = [["overview", "Overview", "ph ph-squares-four"], ["calendar", "Calendar", "ph ph-calendar-blank"], ["invoices", "Invoices", "ph ph-receipt"], ["students", "Students", "ph ph-users"], ["notes", "Teaching Notes", "ph ph-note-pencil"], ["videos", "Video Library", "ph ph-video"], ["assignments", "Assignments", "ph ph-list-checks"], ["invitations", "Account Invitations", "ph ph-envelope-simple"], ["settings", "Settings", "ph ph-gear"]];
 const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
 const GHL_ACTIONS_OFF = "Manage this invoice in GoHighLevel for now. Portal invoice actions aren't switched on.";
 const statusLabel: Record<string, string> = { sent: "Sent", paid: "Paid", draft: "Draft", void: "Void", overdue: "Overdue", partially_paid: "Sent", payment_processing: "Sent" };
@@ -45,7 +45,7 @@ export function useTeacherVM(screen: string): VM {
   const [invites, setInvites] = useState<InvitationDTO[]>([]);
   const [issued, setIssued] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<any>(null);
-  const [profile, setProfile] = useState<{ student: StudentSummary; notes: NoteDTO[]; videos: AssignedVideoDTO[]; assignments: PracticeAssignmentDTO[]; lessons: LessonDTO[] | null; billing: BillingDTO | null } | null>(null);
+  const [profile, setProfile] = useState<{ student: StudentSummary; notes: NoteDTO[]; videos: AssignedVideoDTO[]; assignments: PracticeAssignmentDTO[]; lessons: LessonDTO[] | null; billing: BillingDTO | null; packageLessons?: number } | null>(null);
   const [loading, setLoading] = useState(true);
   const [apiDown, setApiDown] = useState("");
 
@@ -166,7 +166,7 @@ export function useTeacherVM(screen: string): VM {
   const q = query.trim().toLowerCase();
   const nextShort = (iso: string | null) => (iso ? `${fmt(iso, { weekday: "short", month: "short", day: "numeric" }).replace(",", "")} · ${clock(iso)}` : "—");
   const filteredStudents = students.filter((s) => !q || s.fullName.toLowerCase().includes(q) || (s.guardianName ?? "").toLowerCase().includes(q)).map((s) => ({
-    name: s.fullName, style: s.styleLine, parent: s.guardianName ?? "—", format: s.format, next: nextShort(s.nextLesson), notes: s.noteCount, videos: s.videoCount, assign: s.assignmentCount,
+    name: s.fullName, style: s.styleLine, parent: s.guardianName ?? "—", format: s.format, next: nextShort(s.nextLesson), notes: s.noteCount, videos: s.videoCount, assign: s.assignmentCount, packages: s.packageLessons ?? 0,
     initials: initialsOf(s.fullName), icon: s.format === "Zoom" ? "ph ph-video-camera" : "ph ph-map-pin", open: () => navigate(`/teacher/students/${s.id}`),
   }));
 
@@ -186,7 +186,8 @@ export function useTeacherVM(screen: string): VM {
     icon: st?.format === "Zoom" ? "ph ph-video-camera" : "ph ph-map-pin", format: st?.format === "Zoom" ? "Zoom" : "In person · Music City SF",
     next: nextShort(row?.nextLesson ?? null),
     pay: !profile?.billing ? "Billing unavailable" : profUnpaid ? `Invoice #${profile.billing.openInvoices[0]?.number} unpaid` : "Paid up", payColor: profUnpaid ? "#9C5F22" : "#4A6149",
-    refCode: "—", referred: "Not active yet", refCredit: "No credits", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
+    packageLessons: profile?.packageLessons ?? row?.packageLessons ?? 0,
+    refCode: "—", referred: "Email from the student page", refCredit: "Placeholder reward", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
     remind: () => flash(GHL_ACTIONS_OFF), viewAsLabel: adult ? "View as student" : "View as family",
     isChild: !adult, acctType: adult ? "Adult student" : "Child · parent-owned", tfa: "managed by account owner",
     migratePending: false, canMigrate: true, migrate: () => { setMigrateBill("student"); open("migrate", { form: { email: "" } }); },
@@ -393,8 +394,8 @@ export function useTeacherVM(screen: string): VM {
   const zoomCount = (events ?? []).filter((e) => /zoom/i.test(`${e.address} ${e.title}`)).length;
   const unknown = "—";
   const stats = [
-    { label: "Active students", value: overview ? String(overview.studentCount) : unknown, sub: overview ? `${overview.adultCount} adults` : "Not connected" },
-    { label: "Lessons this week", value: calError ? unknown : String(weekCount), sub: calError ? "GoHighLevel not connected" : `${weekCount - zoomCount} in person · ${zoomCount} Zoom` },
+    { label: "Active students", value: overview ? String(overview.studentCount) : unknown,     sub: overview ? `${overview.adultCount} adults` : "Waiting for the studio list" },
+    { label: "Lessons this week", value: calError ? unknown : String(weekCount), sub: calError ? "Calendar could not be read" : `${weekCount - zoomCount} in person · ${zoomCount} Zoom` },
     { label: "Notes to publish", value: overview ? String(draftCount) : unknown, sub: "Recent drafts" },
     { label: "Pending invitations", value: overview ? String(pendingInv.length) : unknown, sub: `${pendingInv.filter((i) => i.status === "expired").length} expired` },
   ];
@@ -410,7 +411,7 @@ export function useTeacherVM(screen: string): VM {
   const dlg: any = { open: !!dialog, width: "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
   ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
   const hasUnpaid = openInv.length > 0;
-  const connected = (b?: boolean) => (b ? "Connected" : "Not connected");
+  const connected = (b?: boolean) => (b ? "Ready" : "Unavailable");
   const integrations = settings?.integrations;
 
   return {
@@ -478,7 +479,7 @@ export function useTeacherVM(screen: string): VM {
         await persistNote();
         setSavedAt(clock(new Date().toISOString()));
         flash("Draft saved. Private to you.");
-      } else flash(screen === "settings" ? "Referral settings aren't switched on yet." : "Assignments are saved when you assign them.");
+      } else flash(screen === "settings" ? "Referral rewards stay as placeholders. Send a referral from the student page." : "Assignments are saved when you assign them.");
     }),
     pickPublished: guard(async () => {
       const saved = await persistNote();

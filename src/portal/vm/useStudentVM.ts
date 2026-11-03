@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { formatPackageMoney, LESSON_PACKAGES } from "../../../shared/lesson-packages";
 import { OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type SlotsResponse } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -8,12 +9,17 @@ import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
 const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
-const PACKAGES = [
-  { id: 0, name: "4 lessons", lessons: 4, price: "$380", list: "$400", save: "$20", per: "$95 / lesson", popular: false },
-  { id: 1, name: "8 lessons", lessons: 8, price: "$720", list: "$800", save: "$80", per: "$90 / lesson", popular: true },
-  { id: 2, name: "12 lessons", lessons: 12, price: "$1,020", list: "$1,200", save: "$180", per: "$85 / lesson", popular: false },
-];
-const NOT_ACTIVE = "This option isn't switched on yet. Ask Zane if you'd like it.";
+const packageCard = (id: string) => {
+  const item = LESSON_PACKAGES.find((pkg) => pkg.id === id) ?? LESSON_PACKAGES[1];
+  return {
+    ...item,
+    price: formatPackageMoney(item.amountCents),
+    list: formatPackageMoney(item.listCents),
+    save: formatPackageMoney(item.saveCents),
+    per: `${formatPackageMoney(Math.round(item.amountCents / item.lessons))} / lesson`,
+  };
+};
+const NOT_ACTIVE = "This option isn't available yet. Ask Zane if you'd like it.";
 const pad = (n: number) => String(n).padStart(2, "0");
 const statusWord: Record<string, string> = { sent: "Unpaid", overdue: "Overdue", partially_paid: "Partially paid", payment_processing: "Processing", paid: "Paid", void: "Void" };
 
@@ -58,7 +64,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const [slotError, setSlotError] = useState("");
   const [refEmail, setRefEmail] = useState("");
   const [pkgStep, setPkgStep] = useState(1);
-  const [pkgChoice, setPkgChoice] = useState(1);
+  const [pkgChoice, setPkgChoice] = useState<string>(LESSON_PACKAGES[1].id);
+  const [repeatWeekly, setRepeatWeekly] = useState(false);
 
   const close = useCallback(() => setDialog(null), []);
   const open = useCallback((kind: string, d: any = {}) => {
@@ -141,10 +148,11 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     if (booking) return;
     setBooking(true);
     try {
-      const body = { studentId: student.id, startTime: bkSlot, location: bkLoc };
+      const body = { studentId: student.id, startTime: bkSlot, location: bkLoc, repeatWeekly: repeatWeekly && !rsLesson };
       if (rsLesson) await api(`/lessons/${rsLesson.id}/reschedule`, { method: "POST", body });
       else await api("/lessons", { method: "POST", body });
-      flash(rsLesson ? `Lesson moved to ${fullDate(bkSlot)} at ${clock(bkSlot)}.` : `Lesson booked: ${fullDate(bkSlot)} at ${clock(bkSlot)}.`);
+      const booked = rsLesson ? `Lesson moved to ${fullDate(bkSlot)} at ${clock(bkSlot)}.` : repeatWeekly ? `Weekly lessons booked from ${fullDate(bkSlot)} at ${clock(bkSlot)}. Notifications stay off in preview.` : `Lesson booked: ${fullDate(bkSlot)} at ${clock(bkSlot)}.`;
+      flash(booked);
       close();
       setRsLesson(null);
       await load();
@@ -269,8 +277,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     prevOpacity: bkMonth === 0 ? 0.4 : 1,
     prevMonth: () => setBkMonth((m) => Math.max(0, m - 1)),
     nextMonth: () => setBkMonth((m) => Math.min(6, m + 1)),
-    recurring: false,
-    toggleRecurring: () => flash("Weekly repeats aren't switched on yet. Ask Zane to hold a regular time."),
+    recurring: repeatWeekly,
+    toggleRecurring: () => setRepeatWeekly((on) => !on),
     confirmLabel: booking ? "Saving…" : rsLesson ? "Confirm new time" : "Confirm lesson",
     summary: slotError || (bkSlot && student ? `${student.firstName} · ${dayLabel} · ${clock(bkSlot)} · ${bkLoc}` : "Choose a date and time"),
     confirm: confirmBooking,
@@ -343,12 +351,14 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   ["book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
 
   const features = me?.features;
+  const autopayOn = !!data?.autopayEnabled;
   const ap = {
-    on: false, off: true, status: "Off", color: "rgba(17,22,27,.45)", btn: "Turn on",
-    line: "Pay each lesson automatically with Stripe Link.",
+    on: autopayOn, off: !autopayOn, status: autopayOn ? "Saved" : "Off", color: autopayOn ? "#4A6149" : "rgba(17,22,27,.45)", btn: autopayOn ? "Turn off" : "Turn on",
+    line: autopayOn ? "Preference saved for preview. No card was charged." : "Save autopay for preview. No card is charged.",
     schedule: "your lessons", nextCharge: "your next lesson",
-    intro: "Auto-pay isn't switched on yet. When it is, each lesson can be charged to your saved Stripe Link payment method.",
+    intro: "Preview saves this choice only. Stripe test mode is logged, and no payment method is charged.",
   };
+  const selectedPackage = packageCard(pkgChoice);
   const sched = (data?.upcoming ?? []).map((l, i) => ({
     date: fmt(l.startTime, { weekday: "short", month: "short", day: "numeric" }),
     time: `${clock(l.startTime)} – ${clock(l.endTime)}`,
@@ -377,22 +387,53 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: statusWord[i.status] ?? i.status, on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
     paymentUnavailable: !loading && !billing,
     paymentHistory: allInvoices.filter((i) => i.status === "paid" || i.amountPaid > 0).map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.amountPaid || i.total), status: statusWord[i.status] ?? i.status })),
-    messageStudentId: student?.id ?? "",
+    referralCode: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "",
     f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),
     openBook, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
     openAutopay: () => open("autopay"), openRecovery: () => open("recovery"),
     closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
     payUrl: "#", payNow, autopayUrl: "#",
-    enableAutopay: (e: any) => { e?.preventDefault?.(); flash(NOT_ACTIVE); }, disableAutopay: close,
+    enableAutopay: (e: any) => {
+      e?.preventDefault?.();
+      if (readOnly) return flash("Actions are disabled in teacher preview.");
+      if (!student) return;
+      void api("/autopay", { method: "POST", body: { studentId: student.id, enabled: !autopayOn } })
+        .then(() => { flash(autopayOn ? "Autopay preference cleared. Nothing was charged." : "Autopay preference saved. Nothing was charged."); return load(); })
+        .catch((err) => flash(errorText(err)));
+    },
+    disableAutopay: () => {
+      if (!student || readOnly) return close();
+      void api("/autopay", { method: "POST", body: { studentId: student.id, enabled: false } }).then(() => load()).finally(close);
+    },
     downloadInvoice: () => flash("Invoice PDFs are available from your emailed invoice for now."),
-    pkgLive: !!features?.packages, pkgSoon: !features?.packages, pkgBtnLabel: "Buy a package", pkgCreditLine: "Prepay 4, 8 or 12 lessons at a discount.",
+    pkgLive: !!features?.packages, pkgSoon: false, pkgBtnLabel: "Buy a package",
+    pkgCreditLine: `${data?.packageLessons ?? 0} lesson credits. Prices below are placeholders.`,
     openPackages: () => { setPkgStep(1); open("packages"); },
-    pkg: { step1: pkgStep === 1, step2: pkgStep === 2, step3: false, sel: PACKAGES[pkgChoice], targetLabel: acct.label, next: () => flash(NOT_ACTIVE), back: () => setPkgStep(1), pay: () => flash(NOT_ACTIVE) },
-    pkgCards: PACKAGES.map((p) => ({ ...p, on: p.id === pkgChoice, pick: () => setPkgChoice(p.id), bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : "#fff", border: p.id === pkgChoice ? "#1D2A44" : "rgba(17,22,27,.12)" })),
+    pkg: {
+      step1: pkgStep === 1, step2: pkgStep === 2, step3: pkgStep === 3, sel: selectedPackage, targetLabel: student?.fullName ?? acct.label,
+      next: () => setPkgStep(2), back: () => setPkgStep(1),
+      pay: () => {
+        if (readOnly) return flash("Actions are disabled in teacher preview.");
+        if (!student) return;
+        void api<{ lessonsRemaining: number }>("/packages/purchase", { method: "POST", body: { studentId: student.id, packageId: selectedPackage.id } })
+          .then((res) => { setPkgStep(3); flash(`Logged only. ${res.lessonsRemaining} lesson credits are on the account. Nothing was charged.`); return load(); })
+          .catch((err) => flash(errorText(err)));
+      },
+    },
+    pkgCards: LESSON_PACKAGES.map((item) => packageCard(item.id)).map((p) => ({ ...p, on: p.id === pkgChoice, pick: () => setPkgChoice(p.id), bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : "#fff", border: p.id === pkgChoice ? "#1D2A44" : "rgba(17,22,27,.12)" })),
     pkgTargets: [],
     ref: {
-      inactive: !features?.referrals, code: "Not active yet", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
-      setEmail: (e: any) => setRefEmail(e.target.value), copyCode: () => flash(NOT_ACTIVE), copyLink: () => flash(NOT_ACTIVE), send: () => flash(NOT_ACTIVE),
+      inactive: false, code: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "SFTM-PORTAL", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
+      setEmail: (e: any) => setRefEmail(e.target.value),
+      copyCode: () => { const code = student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : ""; copy(code); flash("Referral code copied."); },
+      copyLink: () => { copy(`${window.location.origin}/invite`); flash("Portal link copied."); },
+      send: () => {
+        if (readOnly) return flash("Actions are disabled in teacher preview.");
+        if (!student || !refEmail.trim()) return flash("Enter an email address.");
+        void api<{ allowlisted: boolean }>("/referrals/invite", { method: "POST", body: { email: refEmail.trim(), studentId: student.id } })
+          .then((res) => flash(res.allowlisted ? `${refEmail} is allowlisted. The referral was logged and no email was sent, because preview has no mailer.` : `Referral for ${refEmail} was logged. No email was sent.`))
+          .catch((err) => flash(errorText(err)));
+      },
     },
     viewAs: readOnly,
     backToProfile: () => navigate(previewId ? `/teacher/students/${previewId}` : "/teacher"),
