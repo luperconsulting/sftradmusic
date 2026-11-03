@@ -3,7 +3,8 @@ import request from "supertest";
 import { createApp } from "../server/app";
 import { FEATURE_REVIEWS, featuresForEnv } from "../server/features";
 import { buildDeps } from "./helpers";
-import { applySeed, buildArzoSeed, cleanupSeed, emptyStore, pageChecks, seedGuard } from "../scripts/arzoSeed";
+import { statSync } from "node:fs";
+import { applySeed, buildArzoSeed, cleanupSeed, emptyStore, invoiceFixturePlan, pageChecks, seedGuard, videoSeedGuard } from "../scripts/arzoSeed";
 
 const parent = { role: "guardian" as const, links: [{ studentId: "11111111-1111-4111-8111-111111111111", canBook: true, canPay: true }] };
 
@@ -11,7 +12,11 @@ describe("Arzo seed plan", () => {
   it("is idempotent, tagged, silent, and only about this test student", () => {
     const seed = buildArzoSeed();
     expect(seed.onlyEmail).toBe("luperdev@gmail.com");
-    expect(seed.profile.ghlContactId).toBe("RQgd4luPVk9r2srPBlHr");
+    expect(seed.profile.ghlContactId).toBe("Nk2ovYQlqpRZJT3fwJzR");
+    expect(seed.studentId).toBe("f6171db2-0a79-454f-8ef4-fcd9d8fc79fc");
+    expect(seed.videos).toHaveLength(5);
+    expect(seed.assignments[0].videoTitle).toBe("portal-test: Technique");
+    expect(statSync(new URL("../scripts/fixtures/portal-test-arzo.mp4", import.meta.url)).size).toBeLessThan(50_000);
     expect(seed.sendsEmail).toBe(false);
     expect(seed.sendsSms).toBe(false);
     expect(seed.lessons.every((l) => l.toNotify === false && l.title.startsWith("portal-test:"))).toBe(true);
@@ -33,11 +38,17 @@ describe("Arzo seed plan", () => {
     expect(checks.map((c) => c.page)).toEqual([...student, ...teacher]);
     expect(checks.find((c) => c.page === "Student videos")?.pass).toBe(true);
     expect(checks.find((c) => c.page === "Student balance")?.pass).toBe(false);
-    expect(checks.find((c) => c.page === "Student messages")?.pass).toBe(false);
+    expect(checks.find((c) => c.page === "Student messages")?.pass).toBe(true);
     expect(checks.find((c) => c.page === "Teacher invoices")?.pass).toBe(false);
   });
 
   it("refuses to run without write credentials or against production", () => {
+    const videos = videoSeedGuard({});
+    expect(videos.ok).toBe(false);
+    if (!videos.ok) expect(videos.missing).toEqual(["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY"]);
+    expect(invoiceFixturePlan(false).write).toBe(false);
+    const ready = invoiceFixturePlan(true);
+    expect(ready.write && ready.rows.every((row) => row.liveMode === false)).toBe(true);
     const missing = seedGuard({});
     expect(missing.ok).toBe(false);
     if (!missing.ok) expect(missing.missing).toEqual(["SUPABASE_URL", "SUPABASE_SERVICE_ROLE_KEY", "GHL_PRIVATE_INTEGRATION_TOKEN", "GHL_LOCATION_ID", "GHL_LESSON_CALENDAR_ID"]);
@@ -48,10 +59,14 @@ describe("Arzo seed plan", () => {
 });
 
 describe("feature flags", () => {
-  it("keeps every flag off on preview and production because none passed", () => {
-    expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual({ packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false });
-    expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual(featuresForEnv({ VERCEL_ENV: "preview" }));
-    expect(Object.values(FEATURE_REVIEWS).every((r) => r.pass === false)).toBe(true);
+  it("turns on invoice actions for preview only", () => {
+    expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual({ packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: true });
+    expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual({ packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false });
+    expect(FEATURE_REVIEWS.invoiceActions.pass).toBe(true);
+    expect(FEATURE_REVIEWS.packages.pass).toBe(false);
+    expect(FEATURE_REVIEWS.autopay.pass).toBe(false);
+    expect(FEATURE_REVIEWS.referrals.pass).toBe(false);
+    expect(FEATURE_REVIEWS.recurring.pass).toBe(false);
   });
 
   it("leaves package, autopay, referral, and invoice actions returning 501", async () => {

@@ -143,7 +143,7 @@ Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both cre
 - **Import** links a contact you pick, as before.
 - **Duplicates** return `409` before anything is created. A repeated student email returns `student_already_exists` with "A student with this email is already enrolled." The same code, with "This student is already enrolled.", covers an already-linked contact on the create path and the same minor name under the same guardian. Importing a contact id that is already on a student returns `contact_already_linked`.
 
-**Test fixture.** Tests and examples use Arzo Luper, `luperdev@gmail.com`, GoHighLevel contact `RQgd4luPVk9r2srPBlHr`. That contact already exists in the studio location. Tests mock GoHighLevel and Supabase and must not call the live API or create a contact. The location id stays in `GHL_LOCATION_ID` only.
+**Test fixture.** Tests and examples use Arzo Luper, `luperdev@gmail.com`, student `f6171db2-0a79-454f-8ef4-fcd9d8fc79fc`, GoHighLevel contact `Nk2ovYQlqpRZJT3fwJzR`. Tests mock GoHighLevel and Supabase and must not call the live API or create a contact. The location id stays in `GHL_LOCATION_ID` only.
 
 **Before this works live:** apply `supabase/migrations/0002_student_email.sql` (one `add column`; do not reapply 0001), and give the GHL token `contacts.readonly` and `contacts.write`. None of these contact calls has run live, including the duplicate response shape. Deleting a contact created by a failed save uses `DELETE /contacts/{contactId}` and needs `contacts.write`.
 
@@ -178,7 +178,7 @@ The live invoice response has no hosted payment URL, so the portal doesn't open 
 
 Two simultaneous clicks from different devices could each pass the 10-minute check, so a rare duplicate message is possible. A paid invoice can't be charged twice by this route, but confirm how a re-sent link behaves.
 
-Payment status is always read live from GHL, and the portal never writes it. The "Mark paid", "Remind", "Send" and "Void" actions return `501` by design. No Stripe webhook is needed for correct behavior.
+Payment status is always read live from GHL, and the portal never writes it. On a preview deployment with safe mode on, "Mark paid", "Remind", "Send" and "Void" only write a server log and return `suppressed: true`. They do not call GoHighLevel, so nothing is sent or charged. Everywhere else, including production, those routes return `501`. No Stripe webhook is needed for correct behavior.
 
 `POST /api/webhooks/ghl` verifies RSA-SHA256 over the raw body from the `x-wh-signature` header against `GHL_WEBHOOK_PUBLIC_KEY`, and rejects everything if that key is unset. It changes no state. **Confirm the header and key against GHL's webhook documentation before relying on it.**
 
@@ -253,6 +253,9 @@ All responses are JSON. Errors are `{ "error": { "code", "message" } }`. Types a
 | `GET /api/videos/:id/playback` | assigned family, teacher | Signed URL, 15 minutes |
 | `POST /api/videos/:id/watched` | family | Record watched |
 | `POST /api/assignments/:id/complete` | family | Completion tracking |
+| `GET,POST /api/messages` | family for their student; teacher | In-portal threads. No email or SMS. Needs migration `0003_messages.sql`. |
+| `GET,POST /api/teacher/messages` | teacher | Every student's threads. No email or SMS. |
+| `POST /api/teacher/invoices/:id/send`, `/remind`, `/void`, `/mark-paid` | teacher | Preview safe mode logs only and returns `suppressed: true`. Otherwise `501`. Never charges. |
 | `POST /api/packages/purchase`, `/api/autopay`, `/api/referrals/*` | any | `501`, not enabled |
 | `GET /api/teacher/students`, `/students/:id`, `/overview`, `/calendar`, `/invoices`, `/settings` | teacher | Studio data |
 | `POST /api/teacher/notes`, `PUT /notes/:id`, `POST /notes/:id/publish` | teacher | Notes |

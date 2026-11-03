@@ -8,7 +8,7 @@ import { createGhlClient } from "../server/integrations/ghl";
 import { buildDeps, fakeGhl, rawInvoice, STUDENT_A } from "./helpers";
 
 const ARZO_EMAIL = "luperdev@gmail.com";
-const ARZO_CONTACT = "RQgd4luPVk9r2srPBlHr";
+const ARZO_CONTACT = "Nk2ovYQlqpRZJT3fwJzR";
 const TOKEN = "server-only-token";
 
 const ghlConfig = (safeMode?: boolean) => ({

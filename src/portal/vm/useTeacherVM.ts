@@ -9,8 +9,8 @@ import { clock, copy, fmt, fmtDay, initialsOf, TZ, todayLabel, useToast, useView
 import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
-const TITLES: Record<string, string> = { overview: "Overview", calendar: "Calendar", invoices: "Invoices", students: "Students", profile: "Student profile", notes: "Teaching Notes", videos: "Video Library", assignments: "Assignments", invitations: "Account Invitations", settings: "Settings" };
-const NAV = [["overview", "Overview", "ph ph-squares-four"], ["calendar", "Calendar", "ph ph-calendar-blank"], ["invoices", "Invoices", "ph ph-receipt"], ["students", "Students", "ph ph-users"], ["notes", "Teaching Notes", "ph ph-note-pencil"], ["videos", "Video Library", "ph ph-video"], ["assignments", "Assignments", "ph ph-list-checks"], ["invitations", "Account Invitations", "ph ph-envelope-simple"], ["settings", "Settings", "ph ph-gear"]];
+const TITLES: Record<string, string> = { overview: "Overview", calendar: "Calendar", invoices: "Invoices", students: "Students", messages: "Messages", profile: "Student profile", notes: "Teaching Notes", videos: "Video Library", assignments: "Assignments", invitations: "Account Invitations", settings: "Settings" };
+const NAV = [["overview", "Overview", "ph ph-squares-four"], ["calendar", "Calendar", "ph ph-calendar-blank"], ["invoices", "Invoices", "ph ph-receipt"], ["students", "Students", "ph ph-users"], ["messages", "Messages", "ph ph-chat-circle"], ["notes", "Teaching Notes", "ph ph-note-pencil"], ["videos", "Video Library", "ph ph-video"], ["assignments", "Assignments", "ph ph-list-checks"], ["invitations", "Account Invitations", "ph ph-envelope-simple"], ["settings", "Settings", "ph ph-gear"]];
 const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
 const GHL_ACTIONS_OFF = "Manage this invoice in GoHighLevel for now. Portal invoice actions aren't switched on.";
 const statusLabel: Record<string, string> = { sent: "Sent", paid: "Paid", draft: "Draft", void: "Void", overdue: "Overdue", partially_paid: "Sent", payment_processing: "Sent" };
@@ -347,8 +347,17 @@ export function useTeacherVM(screen: string): VM {
     const d = invoiceDisplay(i);
     const student = students.find((s) => s.billingContactId === i.contactId);
     const colors: any = { Paid: "#4A6149", Sent: "#C27D38", Overdue: "#9C5F22", Draft: "rgba(17,22,27,.45)", Void: "rgba(17,22,27,.35)" };
+    const invoiceActionsOn = !!me?.features?.invoiceActions;
+    const runInvoice = (action: "send" | "remind" | "void" | "mark-paid", label: string) => guard(async () => {
+      if (!invoiceActionsOn) { flash(GHL_ACTIONS_OFF); return; }
+      const res = await api<{ suppressed?: boolean }>(`/teacher/invoices/${encodeURIComponent(i.id)}/${action}`, { method: "POST" });
+      flash(res?.suppressed ? `${label} was logged only. Nothing was sent or charged, and GoHighLevel was not changed.` : `${label} was recorded.`);
+    });
     const off = () => flash(GHL_ACTIONS_OFF);
-    const actions = d === "Draft" ? [{ label: "Send", color: "#1D2A44", run: off }] : d === "Paid" ? [{ label: "Receipt", color: "#1D2A44", run: off }] : d === "Void" ? [] : [{ label: "Remind", color: "#1D2A44", run: off }, { label: "Mark paid", color: "#4A6149", run: off }, { label: "Void", color: "#9C5F22", run: off }];
+    const button = (label: string, color: string, action: "send" | "remind" | "void" | "mark-paid") => (
+      invoiceActionsOn ? { label, color, run: runInvoice(action, label) } : { label, color, run: off }
+    );
+    const actions = d === "Draft" ? [button("Send", "#1D2A44", "send")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), button("Mark paid", "#4A6149", "mark-paid"), button("Void", "#9C5F22", "void")];
     return {
       num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: d, color: colors[d] ?? "#1D2A44", actions,
       openStudent: () => (student ? navigate(`/teacher/students/${student.id}`) : flash(`${i.contactName} isn't linked to an enrolled student.`)),
@@ -412,7 +421,14 @@ export function useTeacherVM(screen: string): VM {
     today: todayLabel(), syncLabel: "Live from GoHighLevel", tfaLabel: sec.tfa.on ? "2FA on" : "2FA off",
     sub: { loading, default: !loading, empty: !loading && videos.length === 0, notEmpty: loading || videos.length > 0, assign: !!assignVideo, draft: note.status === "draft", published: note.status === "published" },
     apiDown,
-    stats, upcoming, hasUnpaid, noUnpaid: !hasUnpaid, remindAll: () => flash(GHL_ACTIONS_OFF), remindLabel: hasUnpaid ? `Remind ${openInv.length} unpaid` : "No unpaid lessons", remindOpacity: hasUnpaid ? 1 : 0.45,
+    stats, upcoming, hasUnpaid, noUnpaid: !hasUnpaid, remindAll: () => {
+      if (!me?.features?.invoiceActions) return flash(GHL_ACTIONS_OFF);
+      if (!hasUnpaid) return;
+      return guard(async () => {
+        for (const inv of openInv) await api(`/teacher/invoices/${encodeURIComponent(inv.id)}/remind`, { method: "POST" });
+        flash(`Logged reminders for ${openInv.length} invoice${openInv.length === 1 ? "" : "s"}. Nothing was sent or charged.`);
+      })();
+    }, remindLabel: hasUnpaid ? `Remind ${openInv.length} unpaid` : "No unpaid lessons", remindOpacity: hasUnpaid ? 1 : 0.45,
     recentNotes: (overview?.recentNotes ?? []).map((n: any) => ({ name: n.studentName, date: fmtDay(n.lessonDate), title: n.title, status: n.status === "draft" ? "Draft" : "Published", sColor: n.status === "draft" ? "#9C5F22" : "#4A6149" })),
     recentVideos: (overview?.recentVideos ?? []).map((x: any) => ({ title: x.title, to: x.to, assigned: fmt(x.assignedAt, { month: "short", day: "numeric" }) })),
     ghl: { calEmbed: false, calNative: true, calUrl: "", invEmbed: false, invNative: true, invUrl: "" },

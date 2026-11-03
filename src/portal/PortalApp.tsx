@@ -130,7 +130,7 @@ function RequireRole({ role, children }: { role: "teacher" | "family"; children:
   return <>{children}</>;
 }
 
-const SECTION_BY_PATH: Record<string, string> = { "/portal/notes": "portal-notes", "/portal/videos": "portal-videos", "/portal/assignments": "portal-videos", "/portal/invoices": "portal-balance" };
+const SECTION_BY_PATH: Record<string, string> = { "/portal/notes": "portal-notes", "/portal/videos": "portal-videos", "/portal/assignments": "portal-videos", "/portal/invoices": "portal-balance", "/portal/payments": "portal-payments", "/portal/messages": "portal-messages" };
 
 function StudentRoute() {
   const [params] = useSearchParams();
@@ -166,7 +166,7 @@ function TeacherRoute({ screen }: { screen: string }) {
   );
 }
 
-const teacherRoutes: [string, string][] = [["/teacher", "overview"], ["/teacher/calendar", "calendar"], ["/teacher/invoices", "invoices"], ["/teacher/students", "students"], ["/teacher/students/:studentId", "profile"], ["/teacher/notes", "notes"], ["/teacher/videos", "videos"], ["/teacher/assignments", "assignments"], ["/teacher/invitations", "invitations"], ["/teacher/settings", "settings"]];
+const teacherRoutes: [string, string][] = [["/teacher", "overview"], ["/teacher/calendar", "calendar"], ["/teacher/invoices", "invoices"], ["/teacher/students", "students"], ["/teacher/students/:studentId", "profile"], ["/teacher/messages", "messages"], ["/teacher/notes", "notes"], ["/teacher/videos", "videos"], ["/teacher/assignments", "assignments"], ["/teacher/invitations", "invitations"], ["/teacher/settings", "settings"]];
 
 export default function PortalApp() {
   return (
@@ -179,7 +179,7 @@ export default function PortalApp() {
         <Route path="/verify" element={<VerifyRoute />} />
         <Route path="/reset-password" element={<ResetPasswordScreen />} />
         <Route path="/denied" element={<AuthScreen screen="denied">{(v) => <DeniedView v={v} />}</AuthScreen>} />
-        {["/portal", "/portal/calendar", "/portal/invoices", "/portal/notes", "/portal/videos", "/portal/assignments"].map((p) => (
+        {["/portal", "/portal/calendar", "/portal/invoices", "/portal/payments", "/portal/messages", "/portal/notes", "/portal/videos", "/portal/assignments"].map((p) => (
           <Route key={p} path={p} element={<RequireRole role="family"><StudentRoute /></RequireRole>} />
         ))}
         {teacherRoutes.map(([p, screen]) => (

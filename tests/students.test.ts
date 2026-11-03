@@ -6,7 +6,7 @@ import { createGhlClient } from "../server/integrations/ghl";
 import { buildDeps, fakeGhl } from "./helpers";
 
 /** Existing studio contact. Tests reuse this id and must not call GoHighLevel. */
-const ARZO = { fullName: "Arzo Luper", email: "luperdev@gmail.com", ghlContactId: "RQgd4luPVk9r2srPBlHr" };
+const ARZO = { fullName: "Arzo Luper", email: "luperdev@gmail.com", ghlContactId: "Nk2ovYQlqpRZJT3fwJzR" };
 
 const users = { teach: { role: "teacher" as const }, parent: { role: "guardian" as const, links: [] } };
 const child = { fullName: "Rowan Sample", ageCategory: "child", guardianName: "Pat Sample", guardianEmail: "PAT@example.com", ghlContactId: "c1", billingContactId: "c2" };

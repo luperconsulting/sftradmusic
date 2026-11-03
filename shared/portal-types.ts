@@ -127,6 +127,23 @@ export interface SlotsResponse {
   days: Record<string, string[]>;
 }
 
+export interface MessageDTO {
+  id: string;
+  body: string;
+  createdAt: string;
+  authorName: string;
+  authorRole: Role | null;
+}
+
+export interface MessageThreadDTO {
+  id: string;
+  studentId: string;
+  studentName: string;
+  subject: string;
+  createdAt: string;
+  messages: MessageDTO[];
+}
+
 export interface InvitationDTO {
   id: string;
   name: string;

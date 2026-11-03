@@ -11,6 +11,7 @@
     "lint": "tsc --noEmit",
     "test": "vitest run",
     "seed:arzo": "tsx scripts/seed-arzo.ts",
+    "seed:arzo:videos": "tsx scripts/seed-arzo-videos.ts",
     "seed:arzo:cleanup": "tsx scripts/cleanup-arzo.ts"
   },
   "dependencies": {
