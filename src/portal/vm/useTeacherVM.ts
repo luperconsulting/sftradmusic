@@ -187,7 +187,7 @@ export function useTeacherVM(screen: string): VM {
     next: nextShort(row?.nextLesson ?? null),
     pay: !profile?.billing ? "Billing unavailable" : profUnpaid ? `Invoice #${profile.billing.openInvoices[0]?.number} unpaid` : "Paid up", payColor: profUnpaid ? "#9C5F22" : "#4A6149",
     packageLessons: profile?.packageLessons ?? row?.packageLessons ?? 0,
-    refCode: "—", referred: "Email from the student page", refCredit: "Placeholder reward", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
+    refCode: "—", referred: "Email from the student page", refCredit: "Reward after the first paid lesson", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
     remind: () => flash(GHL_ACTIONS_OFF), viewAsLabel: adult ? "View as student" : "View as family",
     isChild: !adult, acctType: adult ? "Adult student" : "Child · parent-owned", tfa: "managed by account owner",
     migratePending: false, canMigrate: true, migrate: () => { setMigrateBill("student"); open("migrate", { form: { email: "" } }); },
@@ -574,7 +574,7 @@ export function useTeacherVM(screen: string): VM {
     migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),
     doMigrate: () => flash("Account transfers need the billing change reviewed first. Do this in GoHighLevel and with Zane's checklist for now."),
     // Settings
-    settingsStatus: connected(integrations?.ghl), storageStatus: connected(integrations?.storage), tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
+    settingsStatus: connected(integrations?.ghl), storageStatus: connected(integrations?.storage), cardSavingUnavailable: settings ? settings.cardSaving === false : false, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
     recoveryLine: "Not available yet", recoveryCta: "Details",
     // Dialogs
     ...sec, dlg, dv: {}, dn: {}, form, closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,

@@ -4,9 +4,9 @@ export type FeatureName = keyof Features;
 
 /** Preview turns a flag on only when safe mode can use it without a real charge or an unwanted send. Production stays off. */
 export const FEATURE_REVIEWS: Record<FeatureName, { pass: boolean; reason: string }> = {
-  packages: { pass: true, reason: "Preview purchase records a placeholder package credit and does not call Stripe or GoHighLevel." },
-  autopay: { pass: true, reason: "Preview saves the autopay choice as a Stripe test-mode log. No card is stored and nothing is charged." },
-  referrals: { pass: true, reason: "Preview creates a do-not-disturb portal-test contact. Emails off the allowlist are suppressed. The allowlist is logged because there is no transactional mailer." },
+  packages: { pass: true, reason: "Preview records a 4, 8, or 12 lesson package and does not charge." },
+  autopay: { pass: true, reason: "Preview opens Stripe Checkout in setup mode with a test key. Nothing is charged. Missing keys leave card saving off." },
+  referrals: { pass: true, reason: "Preview creates a do-not-disturb portal-test contact and emails only SAFE_MODE_EMAIL_ALLOWLIST when SMTP is set." },
   recurring: { pass: true, reason: "Preview books eight weekly lessons through the existing appointment call, which sets toNotify false in safe mode." },
   invoiceActions: { pass: true, reason: "On preview, send, remind, void, and mark-paid only write a log. They never call GoHighLevel, so nothing is sent or charged. Production stays off." },
 };

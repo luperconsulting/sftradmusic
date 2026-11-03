@@ -397,8 +397,15 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       e?.preventDefault?.();
       if (readOnly) return flash("Actions are disabled in teacher preview.");
       if (!student) return;
-      void api("/autopay", { method: "POST", body: { studentId: student.id, enabled: !autopayOn } })
-        .then(() => { flash(autopayOn ? "Autopay preference cleared. Nothing was charged." : "Autopay preference saved. Nothing was charged."); return load(); })
+      void api<{ checkoutUrl?: string | null }>("/autopay", { method: "POST", body: { studentId: student.id, enabled: !autopayOn } })
+        .then((res) => {
+          if (res.checkoutUrl) {
+            window.location.assign(res.checkoutUrl);
+            return;
+          }
+          flash(autopayOn ? "Autopay preference cleared. Nothing was charged." : "Autopay preference saved. Nothing was charged.");
+          return load();
+        })
         .catch((err) => flash(errorText(err)));
     },
     disableAutopay: () => {
@@ -407,7 +414,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     },
     downloadInvoice: () => flash("Invoice PDFs are available from your emailed invoice for now."),
     pkgLive: !!features?.packages, pkgSoon: false, pkgBtnLabel: "Buy a package",
-    pkgCreditLine: `${data?.packageLessons ?? 0} lesson credits. Prices below are placeholders.`,
+    pkgCreditLine: `${data?.packageLessons ?? 0} lesson credits.`,
     openPackages: () => { setPkgStep(1); open("packages"); },
     pkg: {
       step1: pkgStep === 1, step2: pkgStep === 2, step3: pkgStep === 3, sel: selectedPackage, targetLabel: student?.fullName ?? acct.label,
@@ -420,7 +427,13 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
           .catch((err) => flash(errorText(err)));
       },
     },
-    pkgCards: LESSON_PACKAGES.map((item) => packageCard(item.id)).map((p) => ({ ...p, on: p.id === pkgChoice, pick: () => setPkgChoice(p.id), bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : "#fff", border: p.id === pkgChoice ? "#1D2A44" : "rgba(17,22,27,.12)" })),
+    pkgCards: LESSON_PACKAGES.map((item) => packageCard(item.id)).map((p) => ({
+      ...p,
+      on: p.id === pkgChoice,
+      pick: () => setPkgChoice(p.id),
+      bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : p.popular ? "rgba(224,163,99,.16)" : "#fff",
+      border: p.id === pkgChoice ? "#1D2A44" : p.popular ? "#E0A363" : "rgba(17,22,27,.12)",
+    })),
     pkgTargets: [],
     ref: {
       inactive: false, code: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "SFTM-PORTAL", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
@@ -430,8 +443,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       send: () => {
         if (readOnly) return flash("Actions are disabled in teacher preview.");
         if (!student || !refEmail.trim()) return flash("Enter an email address.");
-        void api<{ allowlisted: boolean }>("/referrals/invite", { method: "POST", body: { email: refEmail.trim(), studentId: student.id } })
-          .then((res) => flash(res.allowlisted ? `${refEmail} is allowlisted. The referral was logged and no email was sent, because preview has no mailer.` : `Referral for ${refEmail} was logged. No email was sent.`))
+        void api<{ allowlisted: boolean; emailed: boolean }>("/referrals/invite", { method: "POST", body: { email: refEmail.trim(), studentId: student.id } })
+          .then((res) => flash(res.emailed ? `Referral email sent to ${refEmail}.` : `Referral for ${refEmail} was logged. No email was sent.`))
           .catch((err) => flash(errorText(err)));
       },
     },
