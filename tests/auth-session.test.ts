@@ -28,6 +28,23 @@ const notRecovery = () => false;
 beforeEach(() => resetTeacherGate());
 
 describe("teacher sign-in", () => {
+  it("routes the server's AAL1 answer to the two-factor screen, then the portal", async () => {
+    const c = client({ access_token: passwordToken });
+    markPasswordVerified();
+    const pending = { mfaRequired: true as const, user: { role: "teacher" as const, mfaEnabled: true, aal: "aal1" } };
+    expect(await resolveAuthState(c, async () => pending, notRecovery)).toEqual({ status: "needsMfa", me: null, mfaEnrolled: true });
+    markMfaVerified();
+    expect((await resolveAuthState(c, async () => teacher("aal2"), notRecovery)).status).toBe("ready");
+    expect(c.auth.signOut).not.toHaveBeenCalled();
+  });
+
+  it("calls only a missing account row 'no account'", async () => {
+    const noRow = await resolveAuthState(client({ access_token: passwordToken }), async () => { throw new ApiRequestError(403, "no_account", "x"); }, notRecovery);
+    expect(noRow.status).toBe("noAccount");
+    const other = await resolveAuthState(client({ access_token: passwordToken }), async () => { throw new ApiRequestError(403, "forbidden", "x"); }, notRecovery);
+    expect(other.status).toBe("unavailable");
+  });
+
   it("goes from password to the two-factor screen, then to the portal", async () => {
     const c = client({ access_token: passwordToken });
     markPasswordVerified();
@@ -49,6 +66,13 @@ describe("teacher sign-in", () => {
 });
 
 describe("reloading a stored session", () => {
+  it("signs out a restored AAL1 session from the server's routing answer too", async () => {
+    const c = client({ access_token: passwordToken });
+    const pending = { mfaRequired: true as const, user: { role: "guardian" as const, mfaEnabled: true, aal: "aal1" } };
+    expect((await resolveAuthState(c, async () => pending, notRecovery)).status).toBe("signedOut");
+    expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+  });
+
   it("signs out a password-only (AAL1) session instead of resuming it", async () => {
     const c = client({ access_token: passwordToken });
     const state = await resolveAuthState(c, async () => { throw mfaRequired(); }, notRecovery);
@@ -62,9 +86,11 @@ describe("reloading a stored session", () => {
     expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
   });
 
-  it("is refused by the server at AAL1, for the profile and teacher data alike", async () => {
+  it("gets no data from the server at AAL1, only the role for routing", async () => {
     const app = createApp(buildDeps({ t: { role: "teacher", aal: "aal1" } }));
-    for (const path of ["/api/me", "/api/teacher/students"]) {
+    const me = await request(app).get("/api/me").set("Authorization", "Bearer t");
+    expect(me.body).toEqual({ mfaRequired: true, user: { role: "teacher", mfaEnabled: true, aal: "aal1" } });
+    for (const path of ["/api/teacher/students", "/api/teacher/overview", "/api/portal/dashboard"]) {
       const res = await request(app).get(path).set("Authorization", "Bearer t");
       expect(res.status, path).toBe(403);
       expect(res.body.error.code, path).toBe("mfa_required");

@@ -3,7 +3,7 @@ import { studentFormMessages } from "../shared/student-form.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
-import { OUTSTANDING_BALANCE_MESSAGE, type BillingDTO, type LessonDTO, type DashboardResponse, type InvitationPreview, type MeResponse, type TeacherStudentRow } from "../shared/portal-types.js";
+import { OUTSTANDING_BALANCE_MESSAGE, type BillingDTO, type LessonDTO, type DashboardResponse, type InvitationPreview, type MePending, type MeResponse, type TeacherStudentRow } from "../shared/portal-types.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { ApiError, errorHandler, forbidden, notConfigured, notFound, parse, uuid, wrap } from "./http.js";
 import { memoryRateLimiter, type RateLimiter } from "./rateLimit.js";
@@ -134,7 +134,7 @@ export function createApp(deps: Deps) {
       const session = token ? await auth.verifyToken(token) : null;
       if (!session) throw new ApiError(401, "unauthenticated", "Please sign in.");
       const account = await store.getAccountByUser(session.userId);
-      if (!account) throw forbidden("No portal account is linked to this sign-in.");
+      if (!account) throw new ApiError(403, "no_account", "No portal account is linked to this sign-in.");
       const actor: Actor = {
         userId: session.userId,
         accountId: account.id,
@@ -268,8 +268,14 @@ export function createApp(deps: Deps) {
   }));
 
   // ---- signed-in, any role ---------------------------------------------------------------------------------
-  app.get("/api/me", authenticate(), wrap(async (req) => {
+  // The one route open to a password-only (AAL1) session, so the client can send it to the 2FA screen.
+  // Until 2FA passes it returns only the role and factor status; every data route still requires AAL2.
+  app.get("/api/me", authenticate(true), wrap(async (req) => {
     const actor = actorOf(req);
+    if (actor.aal !== "aal2" || !actor.mfaEnrolled) {
+      const pending: MePending = { mfaRequired: true, user: { role: actor.role, mfaEnabled: actor.mfaEnrolled, aal: actor.aal } };
+      return pending;
+    }
     const { store } = needStore();
     const account = (await store.getAccount(actor.accountId))!;
     const students = await store.getStudents(actor.links.map((l) => l.studentId));

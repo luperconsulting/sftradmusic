@@ -1,5 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { MeResponse } from "../../../shared/portal-types";
+import type { MePending, MeResponse } from "../../../shared/portal-types";
 import { api } from "../api/client";
 import { isRecoverySession } from "./recovery";
 import { resolveAuthState, type AuthStatus } from "./session";
@@ -49,7 +49,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     }
     // Only the reset page may keep a reset link's session; anywhere else it's handled like any other.
     const onResetPage = window.location.pathname === "/reset-password";
-    const next = await resolveAuthState(supabase, () => api<MeResponse>("/me"), (session) => onResetPage && isRecoverySession(session, recoverySignals));
+    const next = await resolveAuthState(supabase, () => api<MeResponse | MePending>("/me"), (session) => onResetPage && isRecoverySession(session, recoverySignals));
     setMe(next.me);
     setMfaEnrolled(next.mfaEnrolled);
     setStatus(next.status);

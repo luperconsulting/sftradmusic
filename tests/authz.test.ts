@@ -60,8 +60,10 @@ describe("role and 2FA enforcement", () => {
 
   it("still lets a password-only session read its profile, so setup can start", async () => {
     const deps = buildDeps({ p: { ...parent, mfa: false, aal: "aal1" } }, null, { getAccount: async () => ({ id: "p", userId: "p", role: "guardian", status: "active", email: "", displayName: "T U", ghlContactId: null }) });
-    expect((await get(createApp(deps), "/api/me", "p")).status).toBe(403);
-    expect((await get(createApp(deps), "/api/me", "p")).body.error.code).toBe("mfa_required");
+    const res = await get(createApp(deps), "/api/me", "p");
+    expect(res.status).toBe(200);
+    // Only what the client needs to choose the 2FA screen: no name, email or account details.
+    expect(res.body).toEqual({ mfaRequired: true, user: { role: "guardian", mfaEnabled: false, aal: "aal1" } });
   });
 
   it("lets a fully verified teacher in", async () => {
@@ -208,6 +210,7 @@ describe("account creation and roles", () => {
     (deps.auth as any).verifyToken = async () => ({ userId: "stranger", email: "x@example.com", aal: "aal2", mfaEnrolled: false });
     const res = await get(createApp(deps), "/api/me", "any");
     expect(res.status).toBe(403);
+    expect(res.body.error.code).toBe("no_account");
   });
 
   it("can't invite a teacher, even as the teacher", async () => {

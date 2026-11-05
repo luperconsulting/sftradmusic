@@ -82,6 +82,12 @@ describe("password and 2FA coverage", () => {
     const closed: string[] = [];
     for (const route of routes) {
       const key = `${route.method} ${route.path}`;
+      if (key === "GET /api/me") {
+        // Open to AAL1 for routing only; it returns no account data until 2FA passes.
+        const me = await request(app).get(route.path).set("Authorization", "Bearer p");
+        expect(Object.keys(me.body).sort(), key).toEqual(["mfaRequired", "user"]);
+        continue;
+      }
       if (PUBLIC.has(key)) {
         open.push(key);
         continue;
@@ -96,7 +102,6 @@ describe("password and 2FA coverage", () => {
     }
     expect(new Set(open)).toEqual(PUBLIC);
     expect(closed.length).toBeGreaterThan(10);
-    expect(closed.some((route) => route.startsWith("GET /api/me"))).toBe(true);
     expect(closed.some((route) => route.includes("/teacher/"))).toBe(true);
   });
 });
