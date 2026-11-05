@@ -81,19 +81,19 @@ function SignInRoute() {
 }
 
 function VerifyRoute() {
-  const { status, me, signOut } = useAuth();
+  const { status, me, mfaEnrolled, signOut } = useAuth();
   const { flash, toast } = useToast();
   const navigate = useNavigate();
   const sec = useSecurity(flash);
   useEffect(() => {
     // Anyone who hasn't enrolled yet must set up 2FA before anything else loads.
-    if (status === "needsMfa" && !me?.user.mfaEnabled) void sec.tfa.open();
+    if (status === "needsMfa" && !mfaEnrolled) void sec.tfa.open();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status, me?.user.mfaEnabled]);
+  }, [status, mfaEnrolled]);
   if (status === "loading") return <Splash />;
   if (status === "ready") return <Navigate to={homeFor(me)} replace />;
   if (status !== "needsMfa") return <Navigate to="/signin" replace />;
-  if (!me?.user.mfaEnabled) {
+  if (!mfaEnrolled) {
     const v: VM = {
       ...sec,
       is: { twofa: true, settings: false },

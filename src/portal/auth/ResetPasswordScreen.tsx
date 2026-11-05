@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import AuthLayout from "../views/auth/AuthLayout";
-import { hasVerifiedRecovery, supabase } from "./supabase";
+import { saveNewPassword, waitForRecoverySession } from "./recovery";
+import { recoverySignals, supabase } from "./supabase";
 import { useAuth } from "./AuthContext";
 
 const label = { display: "flex", flexDirection: "column", gap: 6, fontSize: 11, letterSpacing: ".18em", textTransform: "uppercase", fontWeight: 600, color: "rgba(17,22,27,.6)" } as const;
@@ -11,22 +12,22 @@ const input = { padding: "12px 14px", border: "1px solid rgba(17,22,27,.15)", bo
 export default function ResetPasswordScreen() {
   const { signOut } = useAuth();
   const [linkState, setLinkState] = useState<"checking" | "valid" | "invalid">("checking");
-  // Being signed in isn't enough: an unattended session must not be able to change the password from here.
+  // Being signed in isn't enough: only a session from a reset link can change the password here.
   useEffect(() => {
     let live = true;
     if (!supabase) {
       setLinkState("invalid");
       return;
     }
-    void supabase.auth.getSession().then(async () => {
+    void waitForRecoverySession(async () => (await supabase!.auth.getSession()).data.session, recoverySignals).then(async (ok) => {
       if (!live) return;
-      const ok = hasVerifiedRecovery();
-      setLinkState(ok ? "valid" : "invalid");
-      // An email link alone must not get past 2FA, so the code is checked before the password changes.
+      // An email link alone must not get past 2FA, so an enrolled account confirms its code before saving.
       if (ok) {
         const level = await supabase!.auth.mfa.getAuthenticatorAssuranceLevel();
-        if (live) setNeedsCode(level.data?.nextLevel === "aal2" && level.data?.currentLevel !== "aal2");
+        if (!live) return;
+        setNeedsCode(level.data?.nextLevel === "aal2");
       }
+      setLinkState(ok ? "valid" : "invalid");
     });
     return () => { live = false; };
   }, []);
@@ -42,22 +43,9 @@ export default function ResetPasswordScreen() {
     if (pw !== confirm) return setError("Those passwords don't match.");
     if (!supabase) return setError("Password reset needs the Supabase settings for this site.");
     setBusy(true);
-    if (needsCode) {
-      const factors = await supabase.auth.mfa.listFactors();
-      const factor = factors.data?.totp[0];
-      const check = factor ? await supabase.auth.mfa.challengeAndVerify({ factorId: factor.id, code }) : null;
-      if (!check || check.error) {
-        setBusy(false);
-        return setError("That code isn't valid or has expired. Codes refresh every 30 seconds.");
-      }
-      setNeedsCode(false);
-    }
-    const { error: err } = await supabase.auth.updateUser({ password: pw });
+    const result = await saveNewPassword(supabase, { password: pw, code, needsCode });
     setBusy(false);
-    if (err?.code === "weak_password") return setError(err.message);
-    if (err) return setError("This reset link has expired. Request a new one from the sign-in page.");
-    // Ends every session, including this recovery one, so the new password has to be used.
-    await supabase.auth.signOut({ scope: "global" });
+    if (result.error) return setError(result.error);
     await signOut();
     navigate("/signin", { replace: true });
   };
