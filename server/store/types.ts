@@ -114,7 +114,8 @@ export interface PortalStore {
   getInvitation(id: string): Promise<InvitationRecord | null>;
   revokeInvitation(id: string): Promise<void>;
   /** Pending invites for this email stop working. A resend calls this before issuing a new code. */
-  revokePendingForEmail(email: string): Promise<void>;
+  /** Revokes this email's pending invitations, except the one just issued. */
+  revokePendingForEmail(email: string, exceptId?: string): Promise<void>;
   /** Remembers the Supabase login created by an invite email. Not returned to the browser. */
   attachInvitationAuthUser(id: string, authUserId: string): Promise<void>;
   deleteStudent(id: string): Promise<void>;

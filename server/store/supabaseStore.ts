@@ -1,6 +1,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
 import { ApiError } from "../http.js";
+import { inviteRateLimitSeconds } from "../services/invitations.js";
 import type { AccountRecord, AuthAdmin, InvitationRecord, PortalStore, StudentRecord } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
@@ -319,8 +320,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async revokeInvitation(id) {
       must(await db.from("invitations").update({ status: "revoked" }).eq("id", id));
     },
-    async revokePendingForEmail(email) {
-      must(await db.from("invitations").update({ status: "revoked" }).eq("email", email.toLowerCase()).eq("status", "pending"));
+    async revokePendingForEmail(email, exceptId) {
+      let q = db.from("invitations").update({ status: "revoked" }).eq("email", email.toLowerCase()).eq("status", "pending");
+      if (exceptId) q = q.neq("id", exceptId);
+      must(await q);
     },
     async deleteStudent(id) {
       must(await db.from("students").delete().eq("id", id));
@@ -404,6 +407,8 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
         email,
         options: { shouldCreateUser: true, emailRedirectTo: redirectTo },
       });
+      const wait = inviteRateLimitSeconds(error);
+      if (wait !== null) throw new ApiError(429, "invite_rate_limited", `Please wait ${wait} seconds before resending.`);
       if (error) throw new Error("auth: could not send invitation");
       return null;
     },

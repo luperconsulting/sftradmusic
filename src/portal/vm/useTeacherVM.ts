@@ -562,11 +562,17 @@ export function useTeacherVM(screen: string): VM {
       const email = invEmail.trim();
       if (!email.includes("@")) return flash("Enter a valid email address.");
       const name = invName.trim();
-      const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: { email, ...(name ? { name } : {}) } });
+      // An invite started from a student's row is for that student; a minor's goes to the guardian.
+      const forStudent = students.find((s) => s.id === invStudentId);
+      const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: {
+        email, ...(name ? { name } : {}),
+        ...(forStudent ? { studentIds: [forStudent.id], role: forStudent.isMinor ? "guardian" : "student" } : {}),
+      } });
       const page = `${window.location.origin}/invite`;
       copy(page);
       setInvEmail("");
       setInvName("");
+      setInvStudentId("");
       await refreshInvites();
       flash(`A one-time code was emailed to ${email}. They enter it at ${page}, then choose a password and turn on two-factor authentication.`);
     }),
