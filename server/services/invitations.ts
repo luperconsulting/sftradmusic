@@ -49,3 +49,15 @@ export function hashesMatch(a: string, b: string) {
   const y = Buffer.from(b, "hex");
   return x.length === y.length && timingSafeEqual(x, y);
 }
+
+/**
+ * Seconds Supabase asks us to wait before another code can be emailed, or null if the error isn't a rate limit.
+ * Supabase says "you can only request this after N seconds" with a 429 or an over_*_rate_limit code.
+ */
+export function inviteRateLimitSeconds(error: { status?: number; code?: string; message?: string } | null | undefined) {
+  if (!error) return null;
+  const limited = error.status === 429 || /^over_.*rate_limit$/.test(error.code ?? "");
+  if (!limited) return null;
+  const n = Number(/after (\d+) seconds?/i.exec(error.message ?? "")?.[1]);
+  return Number.isFinite(n) && n > 0 ? n : 60;
+}
