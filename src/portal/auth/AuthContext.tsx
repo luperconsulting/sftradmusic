@@ -1,14 +1,18 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
-import type { MeResponse } from "../../../shared/portal-types";
-import { api, ApiRequestError } from "../api/client";
-import { teacherMfaPending, teacherMustReauthenticate, teacherPortalReady } from "./teacherGate";
-import { DEMO_MODE, supabase } from "./supabase";
+import type { MePending, MeResponse } from "../../../shared/portal-types";
+import { api } from "../api/client";
+import { isRecoverySession } from "./recovery";
+import { resolveAuthState, type AuthStatus } from "./session";
+import { teacherPortalReady } from "./teacherGate";
+import { DEMO_MODE, recoverySignals, supabase } from "./supabase";
 
-export type AuthStatus = "loading" | "signedOut" | "needsMfa" | "ready" | "suspended" | "noAccount" | "unavailable";
+export type { AuthStatus };
 
 interface AuthValue {
   status: AuthStatus;
   me: MeResponse | null;
+  /** Whether a verified authenticator exists. Set before the profile loads, which needs 2FA. */
+  mfaEnrolled: boolean;
   configured: boolean;
   refresh(): Promise<void>;
   signOut(): Promise<void>;
@@ -22,6 +26,7 @@ export const homeFor = (me: MeResponse | null) => (me?.user.role === "teacher" ?
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<AuthStatus>("loading");
   const [me, setMe] = useState<MeResponse | null>(null);
+  const [mfaEnrolled, setMfaEnrolled] = useState(false);
 
   const refresh = useCallback(async () => {
     if (DEMO_MODE) {
@@ -31,7 +36,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         setStatus("signedOut");
         return;
       }
-      setMe(await api<MeResponse>("/me"));
+      const profile = await api<MeResponse>("/me");
+      setMe(profile);
+      setMfaEnrolled(profile.user.mfaEnabled);
       setStatus("ready");
       return;
     }
@@ -40,33 +47,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       setStatus("signedOut");
       return;
     }
-    const { data } = await supabase.auth.getSession();
-    if (!data.session) {
-      setMe(null);
-      setStatus("signedOut");
-      return;
-    }
-    try {
-      const profile = await api<MeResponse>("/me");
-      // A stored teacher session is not a new login. Drop it until this page gets a password and a 2FA challenge.
-      if (teacherMustReauthenticate(profile.user.role)) {
-        await supabase.auth.signOut({ scope: "local" });
-        setMe(null);
-        setStatus("signedOut");
-        return;
-      }
-      setMe(profile);
-      const needsMfa = profile.user.role === "teacher"
-        ? teacherMfaPending(profile.user.role, profile.user.aal)
-        : profile.user.aal !== "aal2" || !profile.user.mfaEnabled;
-      setStatus(needsMfa ? "needsMfa" : "ready");
-    } catch (e) {
-      setMe(null);
-      if (e instanceof ApiRequestError && e.status === 401) setStatus("signedOut");
-      else if (e instanceof ApiRequestError && e.code === "account_suspended") setStatus("suspended");
-      else if (e instanceof ApiRequestError && e.status === 403) setStatus("noAccount");
-      else setStatus("unavailable");
-    }
+    // Only the reset page may keep a reset link's session; anywhere else it's handled like any other.
+    const onResetPage = window.location.pathname === "/reset-password";
+    const next = await resolveAuthState(supabase, () => api<MeResponse | MePending>("/me"), (session) => onResetPage && isRecoverySession(session, recoverySignals));
+    setMe(next.me);
+    setMfaEnrolled(next.mfaEnrolled);
+    setStatus(next.status);
   }, []);
 
   useEffect(() => {
@@ -87,6 +73,6 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     setStatus("signedOut");
   }, []);
 
-  const value = useMemo(() => ({ status, me, configured: DEMO_MODE || !!supabase, refresh, signOut }), [status, me, refresh, signOut]);
+  const value = useMemo(() => ({ status, me, mfaEnrolled, configured: DEMO_MODE || !!supabase, refresh, signOut }), [status, me, mfaEnrolled, refresh, signOut]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -9,7 +9,14 @@ export interface Features {
   invoiceActions: boolean;
 }
 
+/** What /api/me returns before the session has passed 2FA: just enough to choose the next screen. */
+export interface MePending {
+  mfaRequired: true;
+  user: { role: Role; mfaEnabled: boolean; aal: string };
+}
+
 export interface MeResponse {
+  mfaRequired?: false;
   user: { id: string; email: string; role: Role; displayName: string; mfaEnabled: boolean; aal: string };
   account: { label: string; ownerFirst: string; ownerFull: string; email: string; initials: string; isFamily: boolean };
   features: Features;

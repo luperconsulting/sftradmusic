@@ -127,6 +127,8 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       }
       setPassword("");
       setConfirm("");
+      // The password was just set in this page, which counts as entering it.
+      markPasswordVerified();
       await refresh();
       navigate("/verify");
     } catch (e) {
