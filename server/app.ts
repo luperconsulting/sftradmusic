@@ -731,43 +731,56 @@ export function createApp(deps: Deps) {
   }));
 
   teacher.get("/invitations", wrap(async () => ({ invitations: await needStore().store.listInvitations() })));
+  // The invite page on the deployment the teacher is using, so a Preview's emails point at that Preview.
+  // The browser's Origin is used only when it names this same host; otherwise APP_URL.
+  const inviteOrigin = (req: Request) => {
+    const origin = req.header("origin");
+    try {
+      if (origin && new URL(origin).host === req.get("host")) return new URL(origin).origin;
+    } catch { /* fall back to APP_URL */ }
+    return config.appUrl;
+  };
   const issueInvite = async (req: Request, input: { email: string; name: string; method: "email" | "code"; role: "guardian" | "student"; studentIds: string[] }) => {
     const { store, auth } = needStore();
     if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
     const linked = input.studentIds.length ? await store.getStudents(input.studentIds) : [];
     if (input.studentIds.length && linked.length !== input.studentIds.length) throw notFound("That student wasn't found.");
-    // A new code replaces any still-pending invite for this email, including a resend of the same row.
-    await store.revokePendingForEmail(input.email);
+    // A minor's invitation always goes to the guardian, and a guardian invitation needs the child it's for.
+    const role = linked.some((s) => s.isMinor) ? "guardian" : input.role;
+    if (role === "guardian" && !linked.length) throw new ApiError(400, "invalid_input", "Choose the student this parent or guardian is for.");
     const credential = input.method === "code" ? newEnrollmentCode() : newInviteToken();
-    const inviteUrl = input.method === "email" ? portalInvitePage(config.appUrl) : undefined;
+    const inviteUrl = input.method === "email" ? portalInvitePage(inviteOrigin(req)) : undefined;
     const fullName = inviteeFullName(input.name, input.email);
-    const invite = await store.createInvitation({
-      tokenHash: hashCredential(credential),
-      method: input.method,
-      email: input.email,
-      name: input.name.trim() || fullName,
-      role: input.role,
-      studentIds: input.studentIds,
-      expiresAt: new Date(Date.now() + (input.method === "email" ? INVITE_CODE_TTL_MS : INVITE_TTL_MS)).toISOString(),
-      preview: {
-        firstName: fullName.split(/\s+/)[0] || fullName,
-        studentLine: linked.length ? linked.map((s) => s.fullName).join(", ") : "Not enrolled yet",
-        accountFor: `${fullName} · ${input.role === "guardian" ? "parent" : "student"}`,
-        lessons: linked[0]?.styleLine ?? "",
-        format: linked[0]?.format ?? "In person",
-      },
-    });
+    // The email goes first. If Supabase refuses it, for example inside its resend cooldown, the code that
+    // was already sent stays valid because its invitation hasn't been touched.
     let emailed = false;
     if (inviteUrl) {
       try {
         await auth.sendPortalInvite(input.email, inviteUrl);
         emailed = true;
       } catch (e) {
-        await store.revokeInvitation(invite.id).catch(() => undefined);
         if (e instanceof ApiError) throw e;
         throw new ApiError(503, "invite_email_failed", "The invitation email wasn't sent. Please try again.");
       }
     }
+    const invite = await store.createInvitation({
+      tokenHash: hashCredential(credential),
+      method: input.method,
+      email: input.email,
+      name: input.name.trim() || fullName,
+      role,
+      studentIds: input.studentIds,
+      expiresAt: new Date(Date.now() + (input.method === "email" ? INVITE_CODE_TTL_MS : INVITE_TTL_MS)).toISOString(),
+      preview: {
+        firstName: fullName.split(/\s+/)[0] || fullName,
+        studentLine: linked.length ? linked.map((s) => s.fullName).join(", ") : "Not enrolled yet",
+        accountFor: `${fullName} · ${role === "guardian" ? "parent" : "student"}`,
+        lessons: linked[0]?.styleLine ?? "",
+        format: linked[0]?.format ?? "In person",
+      },
+    });
+    // Only now does the new invitation replace older pending ones for this email, including a resent row.
+    await store.revokePendingForEmail(input.email, invite.id);
     await audit(req, "invitation.create", invite.id, { method: input.method, emailed });
     // The plain credential is returned once and never stored. The email itself is sent by Supabase, not GoHighLevel.
     return {
