@@ -318,6 +318,8 @@ export function useTeacherVM(screen: string): VM {
     chooseInvStudent(stateStudent, students);
   }, [screen, stateStudent, students, chooseInvStudent]);
   const refreshInvites = async () => setInvites((await api("/teacher/invitations")).invitations);
+  // After any send attempt the list is re-read, succeeded or not: a failed resend may have left rows changed on the server.
+  const afterInviteAttempt = <T,>(attempt: Promise<T>) => attempt.finally(() => refreshInvites().catch(() => undefined));
   const inviteRows = invites.map((i) => {
     const code = i.method === "code" ? issued[i.id] : undefined;
     const link = i.method === "email" ? issued[i.id] : undefined;
@@ -325,7 +327,7 @@ export function useTeacherVM(screen: string): VM {
     const actions: [string, string, () => void][] = [];
     if (open_ && code) actions.push(["Copy code", "#1D2A44", () => { copy(code); flash(`Code ${code} copied.`); }]);
     if (open_ && link) actions.push(["Copy link", "#1D2A44", () => { copy(link); flash("Invitation link copied."); }]);
-    if (open_) actions.push(["Resend", "#1D2A44", guard(async () => { await api(`/teacher/invitations/${i.id}/resend`, { method: "POST" }); await refreshInvites(); flash(`A new code was emailed to ${i.email}. The previous code no longer works.`); })]);
+    if (open_) actions.push(["Resend", "#1D2A44", guard(async () => { await afterInviteAttempt(api(`/teacher/invitations/${i.id}/resend`, { method: "POST" })); flash(`A new code was emailed to ${i.email}. The previous code no longer works.`); })]);
     if (open_) actions.push(["Revoke", "#9C5F22", guard(async () => { await api(`/teacher/invitations/${i.id}/revoke`, { method: "POST" }); await refreshInvites(); flash("Invitation revoked."); })]);
     return {
       name: i.name, email: i.email, student: i.studentName, status: invLabel[i.status] ?? i.status, sColor: invColor[i.status] ?? "#1D2A44", code,
@@ -564,16 +566,15 @@ export function useTeacherVM(screen: string): VM {
       const name = invName.trim();
       // An invite started from a student's row is for that student; a minor's goes to the guardian.
       const forStudent = students.find((s) => s.id === invStudentId);
-      const created: InvitationDTO = await api("/teacher/invitations", { method: "POST", body: {
+      const created: InvitationDTO = await afterInviteAttempt(api("/teacher/invitations", { method: "POST", body: {
         email, ...(name ? { name } : {}),
         ...(forStudent ? { studentIds: [forStudent.id], role: forStudent.isMinor ? "guardian" : "student" } : {}),
-      } });
+      } }));
       const page = `${window.location.origin}/invite`;
       copy(page);
       setInvEmail("");
       setInvName("");
       setInvStudentId("");
-      await refreshInvites();
       flash(`A one-time code was emailed to ${email}. They enter it at ${page}, then choose a password and turn on two-factor authentication.`);
     }),
     // Migrate

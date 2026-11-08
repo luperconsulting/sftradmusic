@@ -138,6 +138,7 @@ export interface AuthAdmin {
   deleteUser(userId: string): Promise<void>;
   /**
    * Emails a Supabase one-time code (signInWithOtp). The message is the Magic Link template.
+   * Public sign-ups are off, so the login is created (or reused) with the admin API first.
    * redirectTo is only a fallback if that template still contains a link. It must be this deployment's /invite page.
    * Returns null: the login is confirmed only when the code is verified.
    */

@@ -356,6 +356,10 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
 const isExistingLogin = (error: { code?: string; message?: string } | null) =>
   !!error && (error.code === "email_exists" || error.code === "user_already_exists" || /already (been )?registered/i.test(error.message ?? ""));
 
+/** GoTrue refuses to create a login for an OTP: sign-ups are off (signup_disabled) or shouldCreateUser was false (otp_disabled). */
+const isSignupRefused = (error: { status?: number; code?: string; message?: string } | null) =>
+  !!error && (error.code === "signup_disabled" || error.code === "otp_disabled" || /signups? not allowed/i.test(error.message ?? ""));
+
 async function setLoginPassword(admin: SupabaseClient, userId: string, password: string) {
   const { data, error } = await admin.auth.admin.updateUserById(userId, { password, email_confirm: true });
   if (error || !data.user) throw new Error("auth: could not create user");
@@ -402,13 +406,21 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
       return setLoginPassword(admin, id, password);
     },
     async sendPortalInvite(email, redirectTo) {
+      // Public sign-ups are off, so signInWithOtp may not create the login itself (422 signup_disabled).
+      // The service role creates it first, or reuses the existing one. The address is only trusted once the
+      // emailed code is verified, and a login with no accounts row still gets 403.
+      const created = await admin.auth.admin.createUser({ email, email_confirm: true });
+      if (created.error && !isExistingLogin(created.error)) throw new Error("auth: could not create login");
       // The Magic Link template's {{ .Token }} is this code. verifyEmailOtp checks it with type "email".
       const { error } = await admin.auth.signInWithOtp({
         email,
-        options: { shouldCreateUser: true, emailRedirectTo: redirectTo },
+        options: { shouldCreateUser: false, emailRedirectTo: redirectTo },
       });
       const wait = inviteRateLimitSeconds(error);
       if (wait !== null) throw new ApiError(429, "invite_rate_limited", `Please wait ${wait} seconds before resending.`);
+      if (isSignupRefused(error)) {
+        throw new ApiError(503, "invite_signup_disabled", "Supabase has no login for this email and wouldn't create one. Check the server's Supabase service-role key, then try again.");
+      }
       if (error) throw new Error("auth: could not send invitation");
       return null;
     },
