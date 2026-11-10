@@ -7,7 +7,7 @@ import { createApp } from "../server/app";
 import { createCardSetup } from "../server/integrations/stripeSetup";
 import { referralEmailHtml, sendReferralEmail, REFERRAL_FROM } from "../server/mail/referralMail";
 import { LESSON_PACKAGES } from "../shared/lesson-packages";
-import { FUTURE, STUDENT_A, buildDeps, fakeGhl } from "./helpers";
+import { STUDENT_A, buildDeps } from "./helpers";
 
 const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
 const previewFeatures = { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true };
@@ -54,9 +54,7 @@ describe("preview copy and routes", () => {
   });
 
   it("returns no 501 from portal routes when preview safe mode is on", async () => {
-    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } }, fakeGhl({
-      config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", invoiceSenderUserId: "sender1", safeMode: true },
-    }));
+    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } });
     deps.config.safeMode = true;
     deps.config.features = previewFeatures;
     const app = createApp(deps);
@@ -75,8 +73,8 @@ describe("preview copy and routes", () => {
 });
 
 describe("preview feature behavior", () => {
-  function ready(store: Record<string, unknown> = {}, ghl = fakeGhl()) {
-    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } }, ghl, store);
+  function ready(store: Record<string, unknown> = {}) {
+    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } }, store);
     deps.config.safeMode = true;
     deps.config.features = previewFeatures;
     return createApp(deps);
@@ -84,62 +82,41 @@ describe("preview feature behavior", () => {
 
   it("records a placeholder package and does not charge", async () => {
     const rows: { action: string; target: string; meta: Record<string, unknown> }[] = [];
-    const sendInvoice = vi.fn(async () => ({}));
     const app = ready({
       audit: async (_actor: string, action: string, target: string, meta: Record<string, unknown> = {}) => { rows.push({ action, target, meta }); },
       listAudit: async (action: string) => rows.filter((row) => row.action === action).map((row) => ({ target: row.target, meta: row.meta })),
-    }, fakeGhl({ sendInvoice }));
+    });
     const res = await request(app).post("/api/packages/purchase").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, packageId: "4-lessons" });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ suppressed: true, lessonsAdded: 4, lessonsRemaining: 4, packageId: "4-lessons" });
-    expect(sendInvoice).not.toHaveBeenCalled();
   });
 
-  it("saves autopay without calling Stripe or GoHighLevel", async () => {
-    const sendInvoice = vi.fn(async () => ({}));
-    const createContact = vi.fn(async () => ({ contact: { id: "c", name: "n", email: null }, created: true }));
-    const app = ready({}, fakeGhl({ sendInvoice, createContact }));
+  it("saves autopay without calling Stripe", async () => {
+    const app = ready({});
     const res = await request(app).post("/api/autopay").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, enabled: true });
     expect(res.status).toBe(200);
     expect(res.body).toMatchObject({ suppressed: true, enabled: true, processor: "stripe-test-log" });
-    expect(sendInvoice).not.toHaveBeenCalled();
-    expect(createContact).not.toHaveBeenCalled();
   });
 
-  it("suppresses referral email and still tags a portal-test contact", async () => {
-    const createContact = vi.fn(async ({ name, email }: { name: string; email: string }) => ({ contact: { id: "ref", name, email }, created: true }));
-    const app = ready({}, fakeGhl({
-      config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", invoiceSenderUserId: "sender1", safeMode: true },
-      createContact,
-    }));
-    const blocked = await request(app).post("/api/referrals/invite").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, email: "friend@example.com" });
+  it("suppresses referral email and records the referral without creating any CRM contact", async () => {
+    const rows: { action: string; target: string; meta: Record<string, unknown> }[] = [];
+    const app = ready({ audit: async (_a: string, action: string, target: string, meta: Record<string, unknown> = {}) => { rows.push({ action, target, meta }); } });
+    const blocked = await request(app).post("/api/referrals/invite").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, email: "luperdev+friend@gmail.com" });
     expect(blocked.status).toBe(200);
-    expect(blocked.body).toMatchObject({ suppressed: true, emailed: false, allowlisted: false, contactId: "ref" });
+    expect(blocked.body).toMatchObject({ suppressed: true, emailed: false, allowlisted: false });
+    expect(blocked.body.contactId).toBeUndefined();
     const allowed = await request(app).post("/api/referrals/invite").set("Authorization", "Bearer t").send({ email: "luperdev@gmail.com" });
     expect(allowed.status).toBe(200);
     expect(allowed.body).toMatchObject({ suppressed: true, emailed: false, allowlisted: true, mailer: "not_configured" });
-    expect(createContact).toHaveBeenCalledTimes(2);
+    expect(rows.filter((r) => r.action === "referral.invite").map((r) => r.target)).toEqual([STUDENT_A, "luperdev@gmail.com"]);
   });
 
-  it("books eight weekly lessons only while safe mode is on", async () => {
-    const createAppointment = vi.fn(async (input: { startTime: string }) => ({ id: input.startTime, calendarId: "cal", contactId: "contactA", startTime: input.startTime, endTime: input.startTime }));
-    const ghl = fakeGhl({
-      config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", invoiceSenderUserId: "sender1", safeMode: true },
-      createAppointment,
-      getFreeSlots: async () => ({ day: [FUTURE] }),
-      listInvoices: async () => ({ invoices: [], total: 0 }),
-    });
-    const app = ready({}, ghl);
-    const res = await request(app).post("/api/lessons").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, startTime: FUTURE, location: "Zoom", repeatWeekly: true });
-    expect(res.status).toBe(200);
-    expect(res.body.count).toBe(8);
-    expect(createAppointment).toHaveBeenCalledTimes(8);
-
-    const live = buildDeps({ parent }, fakeGhl());
-    live.config.safeMode = false;
-    live.config.features = previewFeatures;
-    const refused = await request(createApp(live)).post("/api/lessons").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, startTime: FUTURE, location: "Zoom", repeatWeekly: true });
-    expect(refused.status).toBe(501);
+  it("refuses portal self-booking, weekly or not, until availability lives in Supabase", async () => {
+    const app = ready({});
+    const start = new Date(Date.now() + 7 * 864e5).toISOString();
+    const res = await request(app).post("/api/lessons").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, startTime: start, location: "Zoom", repeatWeekly: true });
+    expect(res.status).toBe(503);
+    expect(res.body.error.code).toBe("booking_unavailable");
   });
 
   it("uses the real package names and highlights the 8-lesson package", () => {

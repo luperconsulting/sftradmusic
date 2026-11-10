@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
 import { ApiError } from "../http.js";
 import { inviteRateLimitSeconds } from "../services/invitations.js";
-import type { AccountRecord, AuthAdmin, InvitationRecord, PortalStore, StudentRecord } from "./types.js";
+import type { AccountRecord, AuthAdmin, InvitationRecord, InvoiceRecord, LessonRecord, PaymentRecord, PortalStore, StudentRecord } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
 
@@ -11,8 +11,9 @@ function must<T>(res: { data: T | null; error: { message: string } | null }): T 
   return res.data as T;
 }
 
-const needsStudentEmailColumn = (error: { code?: string } | null) => error?.code === "PGRST204" || error?.code === "42703";
-const studentMigrationError = () => new ApiError(503, "migration_required", "Student records need a database update first (migration 0002).");
+// PGRST204/42703: missing column. PGRST205/42P01: missing table.
+const needsMigration = (error: { code?: string } | null) => ["PGRST204", "42703", "PGRST205", "42P01"].includes(error?.code ?? "");
+const studentMigrationError = () => new ApiError(503, "migration_required", "Student records need a database update first (migration 0005).");
 
 const toAccount = (r: any): AccountRecord => ({
   id: r.id,
@@ -34,9 +35,55 @@ const toStudent = (r: any): StudentRecord => ({
   email: r.email ?? null,
   guardianEmail: r.guardian_email,
   studentSince: r.student_since,
-  ghlContactId: r.ghl_contact_id,
-  billingContactId: r.billing_contact_id,
+  teacherAccountId: r.teacher_account_id ?? null,
+  payerId: r.payer_id ?? null,
+  ghlContactId: r.ghl_contact_id ?? null,
+  billingContactId: r.billing_contact_id ?? null,
 });
+const toLesson = (r: any): LessonRecord => ({
+  id: r.id,
+  studentId: r.student_id,
+  teacherAccountId: r.teacher_account_id,
+  startsAt: r.starts_at,
+  endsAt: r.ends_at,
+  locationKind: r.location_kind,
+  location: r.location,
+  zoomUrl: r.zoom_url,
+  status: r.status,
+  cancelledAt: r.cancelled_at,
+  cancellationReason: r.cancellation_reason,
+  rescheduledFromId: r.rescheduled_from_id,
+  createdAt: r.created_at,
+});
+const toInvoice = (r: any): InvoiceRecord => ({
+  id: r.id,
+  number: Number(r.number),
+  studentId: r.student_id,
+  payerId: r.payer_id,
+  payerName: r.billing_contacts?.full_name ?? "",
+  title: r.title,
+  currency: r.currency,
+  totalCents: r.total_cents,
+  amountPaidCents: r.amount_paid_cents,
+  status: r.status,
+  issueDate: r.issue_date,
+  dueDate: r.due_date,
+  createdAt: r.created_at,
+  lines: [...(r.invoice_lines ?? [])]
+    .sort((a: any, b: any) => a.position - b.position)
+    .map((l: any) => ({ label: l.label, amountCents: l.amount_cents, lessonId: l.lesson_id })),
+});
+const toPayment = (r: any): PaymentRecord => ({
+  id: r.id,
+  invoiceId: r.invoice_id,
+  payerId: r.payer_id,
+  amountCents: r.amount_cents,
+  method: r.method,
+  status: r.status,
+  paidAt: r.paid_at,
+  note: r.note,
+});
+const INVOICE_SELECT = "*, billing_contacts(full_name), invoice_lines(label, amount_cents, lesson_id, position)";
 const toNote = (r: any): NoteDTO => ({
   id: r.id,
   studentId: r.student_id,
@@ -113,26 +160,167 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       return (must(await db.from("students").select("*").order("full_name")) as any[]).map(toStudent);
     },
     async checkStudentSchema() {
-      const { error } = await db.from("students").select("email").limit(1);
-      if (needsStudentEmailColumn(error)) throw studentMigrationError();
-      must({ data: [], error });
+      const checks = await Promise.all([
+        db.from("students").select("email, payer_id, teacher_account_id").limit(1),
+        db.from("guardians").select("id").limit(1),
+        db.from("lessons").select("id").limit(1),
+        db.from("invoices").select("id").limit(1),
+      ]);
+      for (const { error } of checks) {
+        if (needsMigration(error)) throw studentMigrationError();
+        must({ data: [], error });
+      }
     },
     async createStudent(input) {
-      const { data, error } = await db.from("students").insert({
-        first_name: input.fullName.split(/\s+/)[0],
-        full_name: input.fullName,
-        is_minor: input.isMinor,
-        email: input.email,
-        guardian_name: input.guardianName,
-        guardian_email: input.guardianEmail,
-        format: input.format,
-        ghl_contact_id: input.ghlContactId,
-        billing_contact_id: input.billingContactId,
-      }).select("*").single();
-      if (error?.code === "23505") return null;
-      // The email column comes from migration 0002.
-      if (needsStudentEmailColumn(error)) throw studentMigrationError();
-      return toStudent(must({ data, error }));
+      // Find or create the guardian first, so a child's payer is the guardian and siblings share them.
+      let guardianId: string | null = null;
+      let guardian: "created" | "reused" | null = null;
+      let createdGuardianId: string | null = null;
+      let payerId: string | null = null;
+      let createdPayerId: string | null = null;
+      try {
+        if (input.isMinor && input.guardianEmail) {
+          const email = input.guardianEmail.toLowerCase();
+          const found: any = must(await db.from("guardians").select("id").eq("email", email).maybeSingle());
+          if (found) {
+            guardianId = found.id;
+            guardian = "reused";
+          } else {
+            const row: any = must(await db.from("guardians").insert({ full_name: input.guardianName ?? email, email }).select("id").single());
+            guardianId = createdGuardianId = row.id;
+            guardian = "created";
+          }
+          const payer: any = must(await db.from("billing_contacts").select("id").eq("guardian_id", guardianId).limit(1).maybeSingle());
+          if (payer) payerId = payer.id;
+          else {
+            const row: any = must(await db.from("billing_contacts").insert({ full_name: input.guardianName ?? email, email, guardian_id: guardianId }).select("id").single());
+            payerId = createdPayerId = row.id;
+          }
+        } else {
+          const row: any = must(await db.from("billing_contacts").insert({ full_name: input.fullName, email: input.email }).select("id").single());
+          payerId = createdPayerId = row.id;
+        }
+        const { data, error } = await db.from("students").insert({
+          first_name: input.fullName.split(/\s+/)[0],
+          full_name: input.fullName,
+          is_minor: input.isMinor,
+          email: input.email,
+          guardian_name: input.guardianName,
+          guardian_email: input.guardianEmail,
+          format: input.format,
+          teacher_account_id: input.teacherAccountId,
+          payer_id: payerId,
+          student_since: new Date().toISOString().slice(0, 10),
+        }).select("*").single();
+        if (needsMigration(error)) throw studentMigrationError();
+        const student = toStudent(must({ data, error }));
+        if (guardianId) must(await db.from("student_guardians").insert({ student_id: student.id, guardian_id: guardianId }));
+        return { student, guardian };
+      } catch (e) {
+        // Rows this call created are removed, so a failed save leaves nothing half-made. Reused rows stay.
+        if (createdPayerId) await db.from("billing_contacts").delete().eq("id", createdPayerId);
+        if (createdGuardianId) await db.from("guardians").delete().eq("id", createdGuardianId);
+        throw e;
+      }
+    },
+    async studioTeacherAccountId() {
+      const rows = must(await db.from("accounts").select("id").eq("role", "teacher").eq("status", "active").order("created_at").limit(1)) as any[];
+      return rows[0]?.id ?? null;
+    },
+    async listLessons(query) {
+      if (query.studentIds && !query.studentIds.length) return [];
+      let q = db.from("lessons").select("*").order("starts_at", { ascending: true });
+      if (query.studentIds) q = q.in("student_id", query.studentIds);
+      if (query.teacherAccountId) q = q.eq("teacher_account_id", query.teacherAccountId);
+      if (query.from) q = q.gte("starts_at", query.from);
+      if (query.to) q = q.lt("starts_at", query.to);
+      return (must(await q) as any[]).map(toLesson);
+    },
+    async getLesson(id) {
+      const r = must(await db.from("lessons").select("*").eq("id", id).maybeSingle());
+      return r ? toLesson(r) : null;
+    },
+    async createLesson(input) {
+      const row: any = must(await db.from("lessons").insert({
+        student_id: input.studentId,
+        teacher_account_id: input.teacherAccountId,
+        starts_at: input.startsAt,
+        ends_at: input.endsAt,
+        location_kind: input.locationKind,
+        location: input.location,
+        zoom_url: input.zoomUrl,
+        created_by_account_id: input.createdByAccountId,
+        rescheduled_from_id: input.rescheduledFromId ?? null,
+      }).select("*").single());
+      const booking = await db.from("bookings").insert({ lesson_id: row.id, student_id: input.studentId, booked_by_account_id: input.createdByAccountId, source: input.source });
+      if (booking.error) {
+        await db.from("lessons").delete().eq("id", row.id);
+        must(booking);
+      }
+      return toLesson(row);
+    },
+    async closeLesson(id, input) {
+      const now = new Date().toISOString();
+      const patch = input.status === "cancelled"
+        ? { status: "cancelled", cancelled_at: now, cancelled_by_account_id: input.byAccountId, cancellation_reason: input.reason, updated_at: now }
+        : { status: "rescheduled", updated_at: now };
+      const row = must(await db.from("lessons").update(patch).eq("id", id).select("*").single());
+      if (input.status === "cancelled") must(await db.from("bookings").update({ status: "cancelled" }).eq("lesson_id", id));
+      return toLesson(row);
+    },
+    async listInvoices(query) {
+      if (query.studentIds && !query.studentIds.length) return [];
+      let q = db.from("invoices").select(INVOICE_SELECT).order("issue_date", { ascending: false }).order("number", { ascending: false });
+      if (query.studentIds) q = q.in("student_id", query.studentIds);
+      if (!query.includeDrafts) q = q.neq("status", "draft");
+      return (must(await q) as any[]).map(toInvoice);
+    },
+    async getInvoice(id) {
+      const r = must(await db.from("invoices").select(INVOICE_SELECT).eq("id", id).maybeSingle());
+      return r ? toInvoice(r) : null;
+    },
+    async createInvoice(input) {
+      const total = input.lines.reduce((sum, l) => sum + l.amountCents, 0);
+      const row: any = must(await db.from("invoices").insert({
+        student_id: input.studentId,
+        payer_id: input.payerId,
+        title: input.title,
+        total_cents: total,
+        status: input.status,
+        issue_date: input.issueDate,
+        due_date: input.dueDate,
+        created_by_account_id: input.createdByAccountId,
+      }).select("id").single());
+      const lines = await db.from("invoice_lines").insert(input.lines.map((l, position) => ({ invoice_id: row.id, label: l.label, amount_cents: l.amountCents, lesson_id: l.lessonId, position })));
+      if (lines.error) {
+        await db.from("invoices").delete().eq("id", row.id);
+        must(lines);
+      }
+      return toInvoice(must(await db.from("invoices").select(INVOICE_SELECT).eq("id", row.id).single()));
+    },
+    async updateInvoiceStatus(id, patch) {
+      const now = new Date().toISOString();
+      must(await db.from("invoices").update({
+        status: patch.status,
+        updated_at: now,
+        ...(patch.amountPaidCents !== undefined ? { amount_paid_cents: patch.amountPaidCents } : {}),
+        ...(patch.status === "void" ? { voided_at: now } : {}),
+      }).eq("id", id));
+      return toInvoice(must(await db.from("invoices").select(INVOICE_SELECT).eq("id", id).single()));
+    },
+    async listPayments(invoiceIds) {
+      if (!invoiceIds.length) return [];
+      return (must(await db.from("payments").select("*").in("invoice_id", invoiceIds).order("paid_at", { ascending: false })) as any[]).map(toPayment);
+    },
+    async recordPayment(input) {
+      return toPayment(must(await db.from("payments").insert({
+        invoice_id: input.invoiceId,
+        payer_id: input.payerId,
+        amount_cents: input.amountCents,
+        method: input.method,
+        note: input.note,
+        recorded_by_account_id: input.recordedByAccountId,
+      }).select("*").single()));
     },
     async studentCounts() {
       const [notes, videos, assignments] = await Promise.all([
@@ -335,6 +523,15 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async createAccountForInvitation(invite, userId) {
       const acct: any = must(await db.from("accounts").insert({ user_id: userId, role: invite.role, email: invite.email, display_name: invite.name }).select().single());
       must(await db.from("account_students").insert(invite.studentIds.map((student_id) => ({ account_id: acct.id, student_id }))));
+      // The new login now owns the guardian or payer rows made for this email, so RLS can match them.
+      const email = invite.email.toLowerCase();
+      if (invite.role === "guardian") {
+        must(await db.from("guardians").update({ account_id: acct.id }).eq("email", email).is("account_id", null));
+        must(await db.from("billing_contacts").update({ account_id: acct.id }).eq("email", email).is("account_id", null).not("guardian_id", "is", null));
+      } else if (invite.studentIds.length) {
+        const payers = (must(await db.from("students").select("payer_id").in("id", invite.studentIds).eq("is_minor", false)) as any[]).map((r) => r.payer_id).filter(Boolean);
+        if (payers.length) must(await db.from("billing_contacts").update({ account_id: acct.id }).in("id", payers).is("account_id", null));
+      }
     },
     async setAccountStatus(accountId, status) {
       return toAccount(must(await db.from("accounts").update({ status }).eq("id", accountId).select().single()));

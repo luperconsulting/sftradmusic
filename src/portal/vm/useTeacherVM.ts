@@ -1,18 +1,18 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { studentFormError } from "../../../shared/student-form";
-import type { AssignedVideoDTO, BillingDTO, GhlContactOption, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
+import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
 import { api, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { supabase } from "../auth/supabase";
-import { clock, copy, fmt, fmtDay, initialsOf, TZ, todayLabel, useToast, useViewport } from "./common";
+import { clock, copy, fmt, fmtDay, initialsOf, TZ, todayLabel, useToast, useViewport, wallTimeToIso } from "./common";
 import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
 const TITLES: Record<string, string> = { overview: "Overview", calendar: "Calendar", invoices: "Invoices", students: "Students", profile: "Student profile", notes: "Teaching Notes", videos: "Video Library", assignments: "Assignments", invitations: "Account Invitations", settings: "Settings" };
 const NAV = [["overview", "Overview", "ph ph-squares-four"], ["calendar", "Calendar", "ph ph-calendar-blank"], ["invoices", "Invoices", "ph ph-receipt"], ["students", "Students", "ph ph-users"], ["notes", "Teaching Notes", "ph ph-note-pencil"], ["videos", "Video Library", "ph ph-video"], ["assignments", "Assignments", "ph ph-list-checks"], ["invitations", "Account Invitations", "ph ph-envelope-simple"], ["settings", "Settings", "ph ph-gear"]];
 const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
-const GHL_ACTIONS_OFF = "Manage this invoice in GoHighLevel for now. Portal invoice actions aren't switched on.";
+const REMIND_OFF = "Reminders aren't sent from the portal yet. The request was logged only.";
 const statusLabel: Record<string, string> = { sent: "Sent", paid: "Paid", draft: "Draft", void: "Void", overdue: "Overdue", partially_paid: "Sent", payment_processing: "Sent" };
 const invColor: Record<string, string> = { accepted: "#4A6149", pending: "#C27D38", code_issued: "#C27D38", expired: "#9C5F22", reset_sent: "#1D2A44", disabled: "rgba(17,22,27,.45)", revoked: "rgba(17,22,27,.45)" };
 const invLabel: Record<string, string> = { accepted: "Accepted", pending: "Pending", code_issued: "Code issued", expired: "Expired", reset_sent: "Reset sent", disabled: "Disabled", revoked: "Revoked" };
@@ -55,6 +55,7 @@ export function useTeacherVM(screen: string): VM {
   const [query, setQuery] = useState("");
   const [cat, setCat] = useState("All");
   const [calWeek, setCalWeek] = useState(0);
+  const [calTick, setCalTick] = useState(0);
   const [invFilter, setInvFilter] = useState("All");
   const [invQ, setInvQ] = useState("");
   const [note, setNote] = useState(emptyNote());
@@ -69,9 +70,6 @@ export function useTeacherVM(screen: string): VM {
   const [invEmail, setInvEmail] = useState("");
   const [invName, setInvName] = useState("");
   const [invStudentId, setInvStudentId] = useState("");
-  const [contactResults, setContactResults] = useState<GhlContactOption[] | null>(null);
-  const [contactSearching, setContactSearching] = useState(false);
-  const [contactError, setContactError] = useState("");
   const [migrateBill, setMigrateBill] = useState("student");
   const contentRef = useRef<HTMLDivElement>(null);
   const file = useRef<File | null>(null);
@@ -120,10 +118,11 @@ export function useTeacherVM(screen: string): VM {
       .then((r) => { if (live) { setEvents(r.events); setCalError(""); } })
       .catch((e) => { if (live) { setEvents([]); setCalError(errorText(e)); } });
     return () => { live = false; };
-  }, [weekStart]);
-  useEffect(() => {
+  }, [weekStart, calTick]);
+  const loadInvoices = useCallback(() => {
     api("/teacher/invoices").then((r) => { setInvoices(r.invoices); setInvoiceError(""); }).catch((e) => { setInvoices([]); setInvoiceError(errorText(e)); });
   }, []);
+  useEffect(() => { loadInvoices(); }, [loadInvoices]);
 
   const loadProfile = useCallback(async (id: string) => {
     try {
@@ -179,6 +178,19 @@ export function useTeacherVM(screen: string): VM {
   const lessonsSorted = [...(profile?.lessons ?? [])].sort((a, b) => a.startTime.localeCompare(b.startTime));
   const now = Date.now();
   const lessonRow = (l: LessonDTO) => ({ date: fmt(l.startTime, { weekday: "short", month: "short", day: "numeric" }), time: clock(l.startTime), loc: l.locationLabel });
+  const ymdInTz = (iso: string) => new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(iso));
+  const hmInTz = (iso: string) => new Intl.DateTimeFormat("en-GB", { timeZone: TZ, hour: "2-digit", minute: "2-digit", hourCycle: "h23" }).format(new Date(iso));
+  const openLessonDialog = (l: LessonDTO | null) => open("teacherLesson", {
+    lesson: l,
+    form: l
+      ? { date: ymdInTz(l.startTime), time: hmInTz(l.startTime), minutes: String(Math.round((new Date(l.endTime).getTime() - new Date(l.startTime).getTime()) / 60000)), location: l.isZoom ? "Zoom" : "Music City SF" }
+      : { date: "", time: "16:00", minutes: "60", location: st?.format === "Zoom" ? "Zoom" : "Music City SF" },
+  });
+  const refreshAfterLessonChange = async () => {
+    setCalTick((t) => t + 1);
+    if (profile) await loadProfile(profile.student.id);
+    setStudents((await api("/teacher/students")).students);
+  };
   const prof = {
     name: st?.fullName ?? "", first: st?.firstName ?? "", initials: st ? initialsOf(st.fullName) : "",
     sub: st ? `${st.styleLine}${adult ? " · Adult student" : " · Child"}${st.studentSince ? ` · Student since ${fmtDay(st.studentSince, { month: "long", year: "numeric" })}` : ""}` : "",
@@ -188,7 +200,11 @@ export function useTeacherVM(screen: string): VM {
     pay: !profile?.billing ? "Billing unavailable" : profUnpaid ? `Invoice #${profile.billing.openInvoices[0]?.number} unpaid` : "Paid up", payColor: profUnpaid ? "#9C5F22" : "#4A6149",
     packageLessons: profile?.packageLessons ?? row?.packageLessons ?? 0,
     refCode: "—", referred: "Email from the student page", refCredit: "Reward after the first paid lesson", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
-    remind: () => flash(GHL_ACTIONS_OFF), viewAsLabel: adult ? "View as student" : "View as family",
+    remind: guard(async () => {
+      const open_ = profile?.billing?.openInvoices[0];
+      if (open_) await api(`/teacher/invoices/${encodeURIComponent(open_.id)}/remind`, { method: "POST" });
+      flash(REMIND_OFF);
+    }), viewAsLabel: adult ? "View as student" : "View as family",
     isChild: !adult, acctType: adult ? "Adult student" : "Child · parent-owned", tfa: "managed by account owner",
     migratePending: false, canMigrate: true, migrate: () => { setMigrateBill("student"); open("migrate", { form: { email: "" } }); },
     resetLink: guard(async () => {
@@ -196,8 +212,22 @@ export function useTeacherVM(screen: string): VM {
       await api(`/teacher/accounts/${row.accountId}/password-reset`, { method: "POST" });
       flash(`Secure password-reset link sent to ${owner}.`);
     }),
-    upcoming: lessonsSorted.filter((l) => new Date(l.startTime).getTime() >= now).slice(0, 3).map((l, i) => ({ ...lessonRow(l), status: i === 0 && profUnpaid ? "Unpaid" : "Booked", color: i === 0 && profUnpaid ? "#9C5F22" : "#1D2A44" })),
-    past: lessonsSorted.filter((l) => new Date(l.startTime).getTime() < now).reverse().slice(0, 5).map((l) => ({ ...lessonRow(l), invoice: "see invoices", status: "Attended", color: "#4A6149" })),
+    upcoming: lessonsSorted.filter((l) => new Date(l.startTime).getTime() >= now && l.status === "confirmed").slice(0, 3).map((l, i) => ({
+      ...lessonRow(l), status: i === 0 && profUnpaid ? "Unpaid" : "Booked", color: i === 0 && profUnpaid ? "#9C5F22" : "#1D2A44",
+      move: () => openLessonDialog(l),
+      cancel: guard(async () => {
+        if (!window.confirm(`Cancel the lesson on ${lessonRow(l).date} at ${lessonRow(l).time}? Nobody is notified.`)) return;
+        await api(`/teacher/lessons/${l.id}/cancel`, { method: "POST", body: {} });
+        await refreshAfterLessonChange();
+        flash("Lesson cancelled. Nobody was notified.");
+      }),
+    })),
+    past: lessonsSorted.filter((l) => new Date(l.startTime).getTime() < now && l.status !== "rescheduled").reverse().slice(0, 5).map((l) => {
+      const cancelled = l.status === "cancelled";
+      return { ...lessonRow(l), invoice: "see invoices", status: cancelled ? "Cancelled" : "Attended", color: cancelled ? "rgba(17,22,27,.45)" : "#4A6149" };
+    }),
+    addLesson: () => openLessonDialog(null),
+    newInvoice: () => open("teacherInvoice", { form: { label: "Lesson", amount: "", dueDate: new Date().toISOString().slice(0, 10) } }),
   };
   const profileNotes = (profile?.notes ?? []).map((n) => ({ date: fmtDay(n.lessonDate, { month: "short", day: "numeric", year: "numeric" }), title: n.title || "Untitled note", status: n.status === "draft" ? "Draft" : "Published", sColor: n.status === "draft" ? "#9C5F22" : "#4A6149" }));
 
@@ -236,42 +266,12 @@ export function useTeacherVM(screen: string): VM {
   }));
 
   // ---- adding students
-  const searchContacts = useCallback(async (query: string) => {
-    setContactSearching(true);
-    setContactError("");
-    try {
-      setContactResults((await api(`/teacher/ghl/contacts?query=${encodeURIComponent(query)}`)).contacts);
-    } catch (e) {
-      setContactResults(null);
-      setContactError(errorText(e));
-    } finally {
-      setContactSearching(false);
-    }
-  }, []);
-  const openAddStudent = (mode: "add" | "import") => {
-    open("addStudent", { mode, form: { ageCategory: "child", format: "In person" } });
-    setContactResults(null);
-    if (mode === "import") void searchContacts("");
-  };
+  const openAddStudent = () => open("addStudent", { mode: "add", form: { ageCategory: "child", format: "In person" } });
   const patchForm = (patch: any) => setForm((f: any) => ({ ...f, ...patch }));
-  const pickContact = (c: GhlContactOption) => {
-    if (form.pickingBilling) return patchForm({ billing: c, pickingBilling: false, query: "" });
-    const isFirst = !form.contact;
-    patchForm({
-      error: "", contact: c, billing: form.billing && form.billing.id !== form.contact?.id ? form.billing : c, pickingContact: false, query: "",
-      ...(isFirst && dialog?.data.mode === "import" ? { fullName: c.name, email: c.email ?? "" } : {}),
-    });
-  };
-  const contactNote = (c: { student: string; billing: string } | null) => {
-    if (!c) return "";
-    const student = c.student === "created" ? "A new GoHighLevel contact was created for them" : "Their existing GoHighLevel contact was linked";
-    if (c.billing === "same") return `${student}.`;
-    return `${student}. ${c.billing === "created" ? "A new contact was created for the parent, for invoices" : "The parent's existing contact will receive invoices"}.`;
-  };
+  const guardianNote = (g: "created" | "reused" | null) =>
+    g === "reused" ? "Their parent was already on file, so siblings share one billing contact." : g === "created" ? "Their parent was saved as the billing contact." : "They pay their own invoices.";
   const saveStudent = async () => {
     if (form.saving) return;
-    const importing = dialog?.data.mode === "import";
-    if (importing && !form.contact) return patchForm({ error: "Choose the student's GoHighLevel contact." });
     const payload = {
       fullName: form.fullName ?? "",
       ageCategory: form.ageCategory,
@@ -284,17 +284,16 @@ export function useTeacherVM(screen: string): VM {
     if (problem) return patchForm({ error: problem });
     patchForm({ saving: true, error: "" });
     try {
-      const { student, contacts } = await api("/teacher/students", { method: "POST", body: {
+      const { student, guardian } = await api("/teacher/students", { method: "POST", body: {
         fullName: payload.fullName.trim(),
         ageCategory: payload.ageCategory,
         email: payload.email.trim(),
         guardianName: payload.guardianName.trim(),
         guardianEmail: payload.guardianEmail.trim(),
         format: payload.format,
-        ...(importing ? { ghlContactId: form.contact.id, billingContactId: form.billing.id } : {}),
       } });
       setStudents((await api("/teacher/students")).students);
-      patchForm({ saving: false, created: { ...student, contactNote: contactNote(contacts) } });
+      patchForm({ saving: false, created: { ...student, contactNote: guardianNote(guardian) } });
     } catch (e) {
       patchForm({ saving: false, error: errorText(e) });
     }
@@ -348,19 +347,17 @@ export function useTeacherVM(screen: string): VM {
     return filterOk && (!invQ || `${i.contactName}${i.number}${i.title}`.toLowerCase().includes(invQ.toLowerCase()));
   }).map((i) => {
     const d = invoiceDisplay(i);
-    const student = students.find((s) => s.billingContactId === i.contactId);
+    const student = students.find((s) => s.id === i.studentId);
     const colors: any = { Paid: "#4A6149", Sent: "#C27D38", Overdue: "#9C5F22", Draft: "rgba(17,22,27,.45)", Void: "rgba(17,22,27,.35)" };
-    const invoiceActionsOn = !!me?.features?.invoiceActions;
     const runInvoice = (action: "send" | "remind" | "void" | "mark-paid", label: string) => guard(async () => {
-      if (!invoiceActionsOn) { flash(GHL_ACTIONS_OFF); return; }
-      const res = await api<{ suppressed?: boolean }>(`/teacher/invoices/${encodeURIComponent(i.id)}/${action}`, { method: "POST" });
-      flash(res?.suppressed ? `${label} was logged only. Nothing was sent or charged, and GoHighLevel was not changed.` : `${label} was recorded.`);
+      if (action === "void" && !window.confirm(`Void invoice #${i.number}? This can't be undone.`)) return;
+      const res = await api<{ suppressed?: boolean }>(`/teacher/invoices/${encodeURIComponent(i.id)}/${action}`, { method: "POST", body: {} });
+      loadInvoices();
+      if (profile && profile.student.id === i.studentId) void loadProfile(profile.student.id);
+      flash(res?.suppressed ? REMIND_OFF : action === "mark-paid" ? `Invoice #${i.number} marked paid. Nothing was charged.` : `${label} saved.`);
     });
-    const off = () => flash(GHL_ACTIONS_OFF);
-    const button = (label: string, color: string, action: "send" | "remind" | "void" | "mark-paid") => (
-      invoiceActionsOn ? { label, color, run: runInvoice(action, label) } : { label, color, run: off }
-    );
-    const actions = d === "Draft" ? [button("Send", "#1D2A44", "send")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), button("Mark paid", "#4A6149", "mark-paid"), button("Void", "#9C5F22", "void")];
+    const button = (label: string, color: string, action: "send" | "remind" | "void" | "mark-paid") => ({ label, color, run: runInvoice(action, label) });
+    const actions = d === "Draft" ? [button("Issue", "#1D2A44", "send"), button("Void", "#9C5F22", "void")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), button("Mark paid", "#4A6149", "mark-paid"), button("Void", "#9C5F22", "void")];
     return {
       num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: d, color: colors[d] ?? "#1D2A44", actions,
       openStudent: () => (student ? navigate(`/teacher/students/${student.id}`) : flash(`${i.contactName} isn't linked to an enrolled student.`)),
@@ -408,10 +405,10 @@ export function useTeacherVM(screen: string): VM {
 
   // ---- dialogs
   const dk = dialog?.kind ?? "", dd = dialog?.data ?? {};
-  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: dialog?.data.mode === "import" ? "Import from GoHighLevel" : "Add a student", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
-  const dlgKickers: any = { addStudent: "Students", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
+  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: "Add a student", teacherLesson: dialog?.data.lesson ? "Move lesson" : "Add a lesson", teacherInvoice: "New invoice", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
+  const dlgKickers: any = { addStudent: "Students", teacherLesson: st?.fullName ?? "Lessons", teacherInvoice: st?.fullName ?? "Billing", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
   const dlg: any = { open: !!dialog, width: "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
+  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate", "teacherLesson", "teacherInvoice"].forEach((k) => { dlg[k] = dk === k; });
   const hasUnpaid = openInv.length > 0;
   const connected = (b?: boolean) => (b ? "Ready" : "Unavailable");
   const integrations = settings?.integrations;
@@ -421,11 +418,10 @@ export function useTeacherVM(screen: string): VM {
     mobile: vp.mobile, notMobile: !vp.mobile, wideNav: vp.wide, shellDir: vp.mobile ? "column" : "row",
     contentRef, pageTitle: screen === "profile" ? st?.fullName ?? "Student profile" : TITLES[screen],
     nav: { canBack: screen === "profile", backLabel: "Students", back: goTo("/teacher/students") },
-    today: todayLabel(), syncLabel: "Live from GoHighLevel", tfaLabel: sec.tfa.on ? "2FA on" : "2FA off",
+    today: todayLabel(), syncLabel: "Studio records", tfaLabel: sec.tfa.on ? "2FA on" : "2FA off",
     sub: { loading, default: !loading, empty: !loading && videos.length === 0, notEmpty: loading || videos.length > 0, assign: !!assignVideo, draft: note.status === "draft", published: note.status === "published" },
     apiDown,
     stats, upcoming, hasUnpaid, noUnpaid: !hasUnpaid, remindAll: () => {
-      if (!me?.features?.invoiceActions) return flash(GHL_ACTIONS_OFF);
       if (!hasUnpaid) return;
       return guard(async () => {
         for (const inv of openInv) await api(`/teacher/invoices/${encodeURIComponent(inv.id)}/remind`, { method: "POST" });
@@ -439,26 +435,15 @@ export function useTeacherVM(screen: string): VM {
     invStats: invoiceError ? [{ label: "Invoices", value: "—", sub: invoiceError, color: "rgba(17,22,27,.6)" }] : [
       { label: "Outstanding", value: `$${sum(openInv, (i) => i.amountDue)}`, sub: `${openInv.length} open invoices`, color: "#1D2A44" },
       { label: "Overdue", value: `$${sum(overdue, (i) => i.amountDue)}`, sub: `${overdue.length} past due`, color: "#9C5F22" },
-      { label: "Collected", value: `$${sum(list, (i) => i.amountPaid)}`, sub: "Stripe Link", color: "#4A6149" },
-      { label: "Drafts", value: String(list.filter((i) => i.status === "draft").length), sub: "In GoHighLevel", color: "rgba(17,22,27,.6)" },
+      { label: "Collected", value: `$${sum(list, (i) => i.amountPaid)}`, sub: "Recorded payments", color: "#4A6149" },
+      { label: "Drafts", value: String(list.filter((i) => i.status === "draft").length), sub: "Not visible to families", color: "rgba(17,22,27,.6)" },
     ],
     invFilters: ["All", "Open", "Overdue", "Paid", "Draft"].map((f) => ({ label: f, pick: () => setInvFilter(f), bg: invFilter === f ? "#1D2A44" : "transparent", color: invFilter === f ? "#fff" : "rgba(17,22,27,.7)", border: invFilter === f ? "#1D2A44" : "rgba(17,22,27,.15)" })),
     invQ, setInvQ: (e: any) => setInvQ(e.target.value), ghlInvoices,
-    openAddStudent: () => openAddStudent("add"), openImportStudent: () => openAddStudent("import"),
-    noStudentsTitle: query ? `No students match “${query}”` : "No students yet", noStudentsHint: query ? "Try a different spelling, or invite a new family." : "Add a student, or import one from GoHighLevel, to get started.", hasQuery: !!query,
+    openAddStudent,
+    noStudentsTitle: query ? `No students match “${query}”` : "No students yet", noStudentsHint: query ? "Try a different spelling, or invite a new family." : "Add a student to get started.", hasQuery: !!query,
     sf: {
       form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value }), created: form.created, saving: !!form.saving, error: form.error,
-      contact: form.contact, billing: form.billing, pickingBilling: !!form.pickingBilling,
-      showContactPicker: dialog?.data.mode === "import" && (!form.contact || !!form.pickingContact || !!form.pickingBilling),
-      showFields: (dialog?.data.mode !== "import" || !!form.contact) && !form.pickingBilling && !form.pickingContact,
-      changeContact: () => patchForm({ pickingContact: true }), changeBilling: () => patchForm({ pickingBilling: true }),
-      query: form.query ?? "", setQuery: (e: any) => patchForm({ query: e.target.value }), search: () => searchContacts(form.query ?? ""),
-      queryKey: (e: any) => { if (e.key === "Enter") void searchContacts(form.query ?? ""); },
-      searching: contactSearching, searchError: contactError, noResults: !contactSearching && contactResults?.length === 0,
-      results: (contactResults ?? []).map((c) => {
-        const taken = !!c.studentName && !form.pickingBilling;
-        return { id: c.id, name: c.name, meta: taken ? `Already linked to ${c.studentName}` : c.email ?? "No email on file", disabled: taken, pick: () => pickContact(c) };
-      }),
       ages: [["child", "Minor"], ["adult", "Adult"]].map(([id, label]) => ({ id, label, on: form.ageCategory === id, pick: () => patchForm({ ageCategory: id }) })),
       formats: [["In person", "In person"], ["Zoom", "Zoom"]].map(([id, label]) => ({ id, label, on: form.format === id, pick: () => patchForm({ format: id }) })),
       isChild: form.ageCategory === "child", save: saveStudent,
@@ -579,10 +564,52 @@ export function useTeacherVM(screen: string): VM {
     }),
     // Migrate
     migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),
-    doMigrate: () => flash("Account transfers need the billing change reviewed first. Do this in GoHighLevel and with Zane's checklist for now."),
+    doMigrate: () => flash("Account transfers need the billing change reviewed first. Use Zane's checklist for now."),
     // Settings
-    settingsStatus: connected(integrations?.ghl), storageStatus: connected(integrations?.storage), cardSavingUnavailable: settings ? settings.cardSaving === false : false, referralMailOff: settings ? settings.referralMail === false : false, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
+    settingsStatus: connected(integrations?.supabase), storageStatus: connected(integrations?.storage), cardSavingUnavailable: settings ? settings.cardSaving === false : false, referralMailOff: settings ? settings.referralMail === false : false, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
     recoveryLine: "Not available yet", recoveryCta: "Details",
+    // Teacher lesson and invoice dialogs (Supabase only, nothing is sent)
+    tl: {
+      form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
+      saveLabel: dd.lesson ? "Move lesson" : "Add lesson",
+      locations: ["Music City SF", "Zoom"].map((id) => ({ id, label: id === "Zoom" ? "Zoom" : "In person", on: form.location === id, pick: () => patchForm({ location: id }) })),
+      save: async () => {
+        if (form.saving || !st) return;
+        if (!form.date || !form.time) return patchForm({ error: "Choose a date and start time." });
+        const minutes = Number(form.minutes || 60);
+        if (!Number.isInteger(minutes) || minutes < 15 || minutes > 240) return patchForm({ error: "Length must be between 15 and 240 minutes." });
+        patchForm({ saving: true, error: "" });
+        try {
+          const body = { startTime: wallTimeToIso(form.date, form.time), minutes, location: form.location };
+          if (dd.lesson) await api(`/teacher/lessons/${dd.lesson.id}/reschedule`, { method: "POST", body });
+          else await api("/teacher/lessons", { method: "POST", body: { ...body, studentId: st.id } });
+          close();
+          await refreshAfterLessonChange();
+          flash(dd.lesson ? "Lesson moved. Nobody was notified." : "Lesson added. Nobody was notified.");
+        } catch (e) {
+          patchForm({ saving: false, error: errorText(e) });
+        }
+      },
+    },
+    ti: {
+      form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
+      payerLine: st ? `Billed to ${adult ? st.fullName : st.guardianName ?? "the parent"}. Saved in the portal only; nothing is emailed or charged.` : "",
+      save: async () => {
+        if (form.saving || !st) return;
+        const amount = Number(form.amount);
+        if (!(amount > 0)) return patchForm({ error: "Enter an amount." });
+        patchForm({ saving: true, error: "" });
+        try {
+          await api("/teacher/invoices", { method: "POST", body: { studentId: st.id, lines: [{ label: (form.label || "Lesson").trim(), amount }], ...(form.dueDate ? { dueDate: form.dueDate } : {}) } });
+          close();
+          loadInvoices();
+          await loadProfile(st.id);
+          flash("Invoice created. It's visible to the family now; nothing was emailed.");
+        } catch (e) {
+          patchForm({ saving: false, error: errorText(e) });
+        }
+      },
+    },
     // Dialogs
     ...sec, dlg, dv: {}, dn: {}, form, closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
     f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),

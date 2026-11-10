@@ -3,7 +3,7 @@ import request from "supertest";
 import { createApp } from "../server/app";
 import { ApiError } from "../server/http";
 import { inviteRateLimitSeconds } from "../server/services/invitations";
-import { buildDeps, STUDENT_A, STUDENT_B, studentRecord } from "./helpers";
+import { buildDeps, PAYER_A, PAYER_B, STUDENT_A, STUDENT_B, studentRecord } from "./helpers";
 
 const PREVIEW_HOST = "sftradmusic-git-feature-example.vercel.app";
 
@@ -14,7 +14,7 @@ function setup(over: { send?: () => Promise<string | null>; students?: Record<st
   const revokePendingForEmail = vi.fn(async () => { order.push("revoke"); });
   const createAccountForInvitation = vi.fn(async () => undefined);
   const students: Record<string, any> = over.students ?? {};
-  const deps = buildDeps({ teach: { role: "teacher" } }, null, {
+  const deps = buildDeps({ teach: { role: "teacher" } }, {
     createInvitation, revokePendingForEmail, createAccountForInvitation,
     getStudents: async (ids: string[]) => ids.map((id) => students[id]).filter(Boolean),
   } as any);
@@ -29,8 +29,8 @@ function setup(over: { send?: () => Promise<string | null>; students?: Record<st
   return { invite, order, sendPortalInvite, createInvitation, revokePendingForEmail };
 }
 
-const minor = { ...studentRecord(STUDENT_A, "contactA", "payerA"), fullName: "Kiroqa Luper", isMinor: true };
-const adult = { ...studentRecord(STUDENT_B, "contactB", "contactB"), fullName: "Ada Luper", isMinor: false };
+const minor = { ...studentRecord(STUDENT_A, PAYER_A), fullName: "Kiroqa Luper", isMinor: true };
+const adult = { ...studentRecord(STUDENT_B, PAYER_B), fullName: "Ada Luper", isMinor: false };
 
 describe("#21 invite from a minor's row", () => {
   it("is a guardian invite linked to that student, even if sent as role student", async () => {
@@ -58,7 +58,7 @@ describe("#21 invite from a minor's row", () => {
   it("links the guardian's new account to the child when the code is accepted", async () => {
     const createAccountForInvitation = vi.fn(async () => undefined);
     const live = { id: "i1", tokenHash: "h", method: "email", email: "parent@example.com", name: "Arzo Luper", role: "guardian", studentIds: [STUDENT_A], status: "pending", expiresAt: new Date(Date.now() + 36e5).toISOString(), preview: { firstName: "Arzo", studentLine: "Kiroqa Luper", accountFor: "Arzo Luper · parent", lessons: "", format: "In person" } };
-    const deps = buildDeps({}, null, {
+    const deps = buildDeps({}, {
       findPendingInvitationByEmail: async () => live,
       claimInvitation: async () => true, createAccountForInvitation, audit: async () => undefined,
     } as any);

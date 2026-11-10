@@ -3,8 +3,8 @@ import request from "supertest";
 import nodemailer from "nodemailer";
 import type { Application } from "express";
 import { createApp } from "../server/app";
-import { invoicePayUrl } from "../server/integrations/ghl";
-import { STUDENT_A, buildDeps, fakeGhl } from "./helpers";
+import { invoicePayUrl } from "../server/legacy/ghl/client";
+import { STUDENT_A, buildDeps } from "./helpers";
 
 const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
 
@@ -36,10 +36,9 @@ const PUBLIC = new Set([
   "POST /api/invitations/verify",
   "POST /api/invitations/redeem",
   "POST /api/invitations/verify-code",
-  "POST /api/webhooks/ghl",
 ]);
 
-describe("invoice pay links", () => {
+describe("legacy invoice pay links (migration only)", () => {
   it("uses a GoHighLevel https link and drops it in safe mode", () => {
     expect(invoicePayUrl({ paymentLink: "https://pay.gohighlevel.com/invoice/abc" }, false)).toBe("https://pay.gohighlevel.com/invoice/abc");
     expect(invoicePayUrl({ paymentLink: "https://pay.gohighlevel.com/invoice/abc" }, true)).toBeNull();
@@ -54,9 +53,7 @@ describe("referral mail on the route", () => {
     const transport = vi.spyOn(nodemailer, "createTransport").mockReturnValue({ sendMail } as any);
     const logs: string[] = [];
     const log = vi.spyOn(console, "info").mockImplementation((message?: unknown) => { logs.push(String(message ?? "")); });
-    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } }, fakeGhl({
-      config: { token: "t", locationId: "loc", lessonCalendarId: "cal", timezone: "UTC", invoiceSenderUserId: "sender1", safeMode: true },
-    }));
+    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } });
     deps.config.safeMode = true;
     deps.config.features = { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true };
     deps.config.smtp = { user: "zane@sftradmusic.com", pass: "app-password-secret" };

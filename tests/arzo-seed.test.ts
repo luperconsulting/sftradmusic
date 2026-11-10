@@ -59,21 +59,21 @@ describe("Arzo seed plan", () => {
 });
 
 describe("feature flags", () => {
-  it("turns every flag on for preview only", () => {
-    const on = { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true };
+  it("turns the reviewed flags on for preview only; portal self-booking stays off", () => {
+    const on = { packages: true, autopay: true, referrals: true, recurring: false, invoiceActions: true };
     const off = { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false };
     expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual(on);
     expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual(off);
-    expect(Object.values(FEATURE_REVIEWS).every((review) => review.pass)).toBe(true);
+    expect(Object.entries(FEATURE_REVIEWS).filter(([, review]) => !review.pass).map(([name]) => name)).toEqual(["recurring"]);
   });
 
-  it("leaves package, autopay, referral, and invoice actions returning 501", async () => {
+  it("leaves package, autopay and referral actions returning 501 outside preview; invoice actions validate ids", async () => {
     const app = createApp(buildDeps({ parent, t: { role: "teacher" } }));
     for (const path of ["/api/packages/purchase", "/api/autopay", "/api/referrals/invite", "/api/referrals/apply"]) {
       expect((await request(app).post(path).set("Authorization", "Bearer parent").send({})).status).toBe(501);
     }
     for (const action of ["send", "remind", "void", "mark-paid"]) {
-      expect((await request(app).post(`/api/teacher/invoices/x/${action}`).set("Authorization", "Bearer t").send({})).status).toBe(501);
+      expect((await request(app).post(`/api/teacher/invoices/x/${action}`).set("Authorization", "Bearer t").send({})).status).toBe(400);
     }
   });
 });

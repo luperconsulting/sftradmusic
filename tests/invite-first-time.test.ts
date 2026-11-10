@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
-import { buildDeps, STUDENT_A, STUDENT_B, studentRecord } from "./helpers";
+import { buildDeps, PAYER_A, PAYER_B, STUDENT_A, STUDENT_B, studentRecord } from "./helpers";
 
 // #23: the project has public sign-ups off, so signInWithOtp alone fails with 422 signup_disabled for any
 // email that has no auth user yet. The adapter must create the login with the service role first.
@@ -24,15 +24,15 @@ vi.mock("@supabase/supabase-js", () => ({
 
 const { createSupabaseAuthAdmin } = await import("../server/store/supabaseStore");
 
-const minor = { ...studentRecord(STUDENT_A, "contactA", "payerA"), fullName: "Kiroqa Luper", isMinor: true };
-const adult = { ...studentRecord(STUDENT_B, "contactB", "contactB"), fullName: "Ada Luper", isMinor: false };
+const minor = { ...studentRecord(STUDENT_A, PAYER_A), fullName: "Kiroqa Luper", isMinor: true };
+const adult = { ...studentRecord(STUDENT_B, PAYER_B), fullName: "Ada Luper", isMinor: false };
 
 function setup() {
   const order: string[] = [];
   const createInvitation = vi.fn(async (i: any) => { order.push("create"); return { ...i, id: "new-invite", status: "pending" }; });
   const revokePendingForEmail = vi.fn(async () => { order.push("revoke"); });
   const students: Record<string, any> = { [STUDENT_A]: minor, [STUDENT_B]: adult };
-  const deps = buildDeps({ teach: { role: "teacher" } }, null, {
+  const deps = buildDeps({ teach: { role: "teacher" } }, {
     createInvitation, revokePendingForEmail,
     getStudents: async (ids: string[]) => ids.map((id) => students[id]).filter(Boolean),
   } as any);

@@ -1,9 +1,10 @@
+// LEGACY. Kept for migrating old GoHighLevel records. The portal never imports this at runtime; see README.md.
 import { z } from "zod";
-import { OUTSTANDING_BALANCE_MESSAGE } from "../../shared/portal-types.js";
-import { ApiError, forbidden } from "../http.js";
-import type { GhlClient } from "../integrations/ghl.js";
-import { canBookFor, type Actor } from "../auth/policy.js";
-import type { StudentRecord } from "../store/types.js";
+import { OUTSTANDING_BALANCE_MESSAGE } from "../../../shared/portal-types.js";
+import { ApiError, forbidden } from "../../http.js";
+import type { GhlClient } from "./client.js";
+import { canBookFor, type Actor } from "../../auth/policy.js";
+import type { StudentRecord } from "../../store/types.js";
 import { getBilling } from "./billing.js";
 
 export const LESSON_MINUTES = 60;
@@ -40,12 +41,12 @@ export async function createLessonBooking(
   input: { startTime: string; location: keyof typeof LOCATIONS },
 ) {
   if (!canBookFor(actor, student.id)) throw forbidden("This account can't book lessons for this student.");
-  const billing = await getBilling(ghl, student.billingContactId);
+  const billing = await getBilling(ghl, student.billingContactId!);
   if (billing.bookingBlocked) throw new ApiError(402, "outstanding_balance", OUTSTANDING_BALANCE_MESSAGE);
   await assertSlotOpen(ghl, input.startTime);
   const endTime = new Date(instant(input.startTime) + LESSON_MINUTES * 60000).toISOString();
   return ghl.createAppointment({
-    contactId: student.ghlContactId,
+    contactId: student.ghlContactId!,
     startTime: input.startTime,
     endTime,
     title: `Lesson: ${student.fullName}`,
@@ -62,7 +63,7 @@ export async function createWeeklyLessons(
 ) {
   if (ghl.config.safeMode !== true) throw new ApiError(501, "feature_not_enabled", "Weekly lessons are only booked when safe mode is on, so nobody is notified.");
   if (!canBookFor(actor, student.id)) throw forbidden("This account can't book lessons for this student.");
-  const billing = await getBilling(ghl, student.billingContactId);
+  const billing = await getBilling(ghl, student.billingContactId!);
   if (billing.bookingBlocked) throw new ApiError(402, "outstanding_balance", OUTSTANDING_BALANCE_MESSAGE);
   await assertSlotOpen(ghl, input.startTime);
   const events: Awaited<ReturnType<GhlClient["createAppointment"]>>[] = [];
@@ -71,7 +72,7 @@ export async function createWeeklyLessons(
     const startTime = new Date(startMs).toISOString();
     const endTime = new Date(startMs + LESSON_MINUTES * 60000).toISOString();
     events.push(await ghl.createAppointment({
-      contactId: student.ghlContactId,
+      contactId: student.ghlContactId!,
       startTime,
       endTime,
       title: `Lesson: ${student.fullName}`,
