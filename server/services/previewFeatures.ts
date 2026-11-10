@@ -1,6 +1,6 @@
+import { createHash } from "node:crypto";
 import { lessonPackageById, packageLessonsFor } from "../../shared/lesson-packages.js";
 import { ApiError } from "../http.js";
-import type { GhlClient } from "../integrations/ghl.js";
 import { sendReferralEmail, type ReferralMessage, type SmtpAuth } from "../mail/referralMail.js";
 import type { PortalStore } from "../store/types.js";
 
@@ -45,7 +45,7 @@ export function autopayEnabledFor(rows: { target: string; meta: Record<string, u
   return latest?.meta.enabled === true;
 }
 
-export async function sendReferral(store: PortalStore, ghl: GhlClient, input: {
+export async function sendReferral(store: PortalStore, input: {
   actorAccountId: string;
   email: string;
   studentId: string | null;
@@ -57,12 +57,10 @@ export async function sendReferral(store: PortalStore, ghl: GhlClient, input: {
   deliver?: (message: ReferralMessage) => Promise<void>;
 }) {
   assertPreviewSafe(input.enabled, input.safeMode);
-  if (ghl.config.safeMode !== true) throw new ApiError(501, "feature_not_enabled", "Referrals are only tracked while safe mode is on.");
   const email = input.email.trim().toLowerCase();
   const allowlisted = input.allowlist.map((item) => item.toLowerCase()).includes(email);
-  // createContact adds dnd and the portal-test tag when the client is in safe mode.
-  const { contact } = await ghl.createContact({ name: `Referral ${email}`, email });
-  const code = referralCodeFor(input.studentId ?? contact.id);
+  // The referral is recorded in Supabase only. No CRM contact is created.
+  const code = input.studentId ? referralCodeFor(input.studentId) : referralCodeFor(createHash("sha256").update(email).digest("hex"));
   const mailed = await sendReferralEmail({
     to: email,
     code,
@@ -72,21 +70,20 @@ export async function sendReferral(store: PortalStore, ghl: GhlClient, input: {
     smtp: input.smtp,
     deliver: input.deliver,
   });
-  await store.audit(input.actorAccountId, REFERRAL_INVITE, input.studentId ?? contact.id, {
+  await store.audit(input.actorAccountId, REFERRAL_INVITE, input.studentId ?? email, {
     email,
-    contactId: contact.id,
     allowlisted,
     suppressed: mailed.suppressed,
     emailed: mailed.emailed,
   });
-  return { ok: true as const, suppressed: mailed.suppressed, emailed: mailed.emailed, allowlisted, contactId: contact.id, mailer: mailed.mailer };
+  return { ok: true as const, suppressed: mailed.suppressed, emailed: mailed.emailed, allowlisted, mailer: mailed.mailer };
 }
 
 export async function applyReferralCode(store: PortalStore, input: { actorAccountId: string; studentId: string; code: string; enabled: boolean; safeMode: boolean }) {
   assertPreviewSafe(input.enabled, input.safeMode);
   const code = input.code.trim().toUpperCase();
   if (!/^SFTM-[A-Z0-9]{8}$/.test(code)) throw new ApiError(400, "invalid_input", "That referral code isn't valid.");
-  console.info(`[referral] safe mode: recorded code ${code} for student ${input.studentId}. No discount was charged or applied in GoHighLevel.`);
+  console.info(`[referral] safe mode: recorded code ${code} for student ${input.studentId}. No discount was charged or applied.`);
   await store.audit(input.actorAccountId, REFERRAL_APPLY, input.studentId, { code, suppressed: true });
   return { ok: true as const, suppressed: true as const, code };
 }

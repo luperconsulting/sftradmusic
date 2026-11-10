@@ -9,7 +9,7 @@ const student = (id: string, first: string, last: string, isMinor = true) => ({ 
 const lesson = (id: string, days: number, sid = A) => ({ id, studentId: sid, startTime: iso(days), endTime: iso(days).replace(/T(\d\d)/, (_, h) => `T${String(Number(h) + 1).padStart(2, "0")}`), status: "confirmed", locationLabel: "Music City SF", locationSub: "Room 4, 1353 Bush St", isZoom: false });
 const note = (id: string, days: number, title: string, status: "draft" | "published" = "published") => ({ id, studentId: A, lessonDate: day(days), title, summary: "Sample lesson summary for design review.", technique: "Sample technique feedback.", practice: "Sample practice plan: ten minutes daily.", goals: "Sample goal for the next lesson.", prep: "Sample preparation.", status, publishedAt: iso(days) });
 const video = (id: string, title: string, category: string, watched: boolean) => ({ id, title, category, description: "Sample video description.", durationLabel: "4:12", source: "upload" as const, assignmentId: id, assignedAt: iso(-3), watchedAt: watched ? iso(-1) : null });
-const invoice = (id: string, number: string, status: any, total: number, due: number) => ({ id, number, title: "2 × 60-min lesson", status, issueDate: day(due - 7), dueDate: day(due), total, amountDue: status === "paid" ? 0 : total, amountPaid: status === "paid" ? total : 0, currency: "USD", contactId: "sample", contactName: "Sample Parent", payUrl: status === "paid" ? null : "https://pay.example.test/invoice", lines: [{ label: "Lesson · Sample · 60 min", amount: total / 2 }, { label: "Lesson · Sample · 60 min", amount: total / 2 }] });
+const invoice = (id: string, number: string, status: any, total: number, due: number) => ({ id, number, title: "2 × 60-min lesson", status, issueDate: day(due - 7), dueDate: day(due), total, amountDue: status === "paid" ? 0 : total, amountPaid: status === "paid" ? total : 0, currency: "USD", contactId: "sample", contactName: "Sample Parent", studentId: A, payUrl: null, lines: [{ label: "Lesson · Sample · 60 min", amount: total / 2 }, { label: "Lesson · Sample · 60 min", amount: total / 2 }] });
 
 const scenario = () => new URLSearchParams(window.location.search).get("demo") ?? "";
 const isTeacherPath = () => window.location.pathname.startsWith("/teacher") || !!new URLSearchParams(window.location.search).get("preview");
@@ -17,7 +17,7 @@ const isTeacherPath = () => window.location.pathname.startsWith("/teacher") || !
 function dashboard(): DashboardResponse {
   const s = [student(A, "Sample", "Student"), student(B, "Example", "Student")];
   const unpaid = scenario() === "unpaid";
-  if (scenario() === "new") return { students: [s[0]], student: s[0], upcoming: [lesson("l1", 6)], history: [], notes: [], videos: [], assignments: [], packageLessons: 0, autopayEnabled: false, billing: { outstanding: 0, openInvoices: [], history: [], bookingBlocked: false, paymentsOpen: true }, lessonsAvailable: true, canBook: true, canPay: true, readOnly: false };
+  if (scenario() === "new") return { students: [s[0]], student: s[0], upcoming: [lesson("l1", 6)], history: [], notes: [], videos: [], assignments: [], packageLessons: 0, autopayEnabled: false, billing: { outstanding: 0, openInvoices: [], history: [], bookingBlocked: false, paymentsOpen: false, payments: [] }, lessonsAvailable: true, canBook: true, canPay: true, readOnly: false };
   const open = unpaid ? [invoice("i2", "2002", "sent", 200, -4)] : [];
   const paid = [invoice("i1", "2001", "paid", 200, -10)];
   return {
@@ -29,25 +29,23 @@ function dashboard(): DashboardResponse {
     assignments: [],
     packageLessons: 0,
     autopayEnabled: false,
-    billing: scenario() === "nobilling" ? null : { outstanding: unpaid ? 200 : 0, openInvoices: open, history: [...open, ...paid], bookingBlocked: unpaid, paymentsOpen: true },
+    billing: scenario() === "nobilling" ? null : { outstanding: unpaid ? 200 : 0, openInvoices: open, history: [...open, ...paid], bookingBlocked: unpaid, paymentsOpen: false, payments: [{ id: "p1", invoiceId: "i1", invoiceNumber: "2001", amount: 200, method: "manual", status: "succeeded" as const, paidAt: iso(-9) }] },
     lessonsAvailable: true, canBook: true, canPay: true, readOnly: isTeacherPath(),
   };
 }
 
-const sampleContacts = [{ id: "c-rowan", name: "Rowan Sample", email: "rowan@example.com" }, { id: "c-parent", name: "Pat Sample", email: "pat@example.com" }];
 const addedStudents: any[] = [];
 
-const rows = (): TeacherStudentRow[] => [...addedStudents, student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, packageLessons: 0, accountId: A, portalStatus: "active", transferPending: false, ghlContactId: "sample", billingContactId: "sample" }));
+const rows = (): TeacherStudentRow[] => [...addedStudents, student(A, "Sample", "Student"), student(B, "Example", "Student"), student("00000000-0000-4000-8000-00000000000c", "Adult", "Learner", false)].map((s, i) => ({ ...s, nextLesson: iso(i + 2), noteCount: 3 + i, videoCount: 2 + i, assignmentCount: i, packageLessons: 0, accountId: A, portalStatus: "active", transferPending: false }));
 
 export async function demoApi(path: string, opts: { method?: string; body?: unknown }) {
   await new Promise((r) => setTimeout(r, 150));
   const p = path.split("?")[0];
-  if (p === "/teacher/ghl/contacts") return { contacts: sampleContacts.map((c) => ({ ...c, studentName: addedStudents.find((s) => s.ghlContactId === c.id)?.fullName ?? null })) };
   if (p === "/teacher/students" && opts.method === "POST") {
     const b = opts.body as any;
-    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), format: b.format === "Zoom" ? "Zoom" as const : "In person" as const, email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null, ghlContactId: b.ghlContactId ?? crypto.randomUUID() };
+    const s = { ...student(crypto.randomUUID(), b.fullName.split(" ")[0], b.fullName.split(" ").slice(1).join(" "), b.ageCategory === "child"), format: b.format === "Zoom" ? "Zoom" as const : "In person" as const, email: b.email, guardianName: b.guardianName ?? null, guardianEmail: b.guardianEmail ?? null };
     addedStudents.push(s);
-    return { student: { id: s.id, fullName: s.fullName }, contacts: b.ghlContactId ? null : { student: "created", billing: b.ageCategory === "child" ? "created" : "same" } };
+    return { student: { id: s.id, fullName: s.fullName }, guardian: b.ageCategory === "child" ? "created" : null };
   }
   if (p === "/teacher/invitations" && opts.method === "POST") {
     const b = opts.body as any;
@@ -83,7 +81,7 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/videos") return { videos: [video("v1", "Sample Video: Bowing", "Technique", false), video("v2", "Sample Video: Tune Walkthrough", "Repertoire", true)].map((v) => ({ ...v, assignedCount: 2 })) };
   if (p === "/teacher/assignments") return { assignments: [{ id: "a1", title: "Sample assignment", instructions: "Sample instructions.", dueDate: day(4), videoId: null, videoTitle: "Sample Video: Bowing", lessonDate: day(-3), students: [{ id: A, name: "Sample Student", completedAt: null }] }] };
   if (p === "/teacher/invitations") return { invitations: [{ id: "x1", name: "Sample Parent", email: "parent@example.com", studentName: "Sample Student", status: "accepted", method: "email", sentAt: iso(-3), expiresAt: null, accountId: null }, { id: "x2", name: "Another Parent", email: "another@example.com", studentName: "Example Student", status: "code_issued", method: "code", sentAt: iso(-1), expiresAt: iso(6), accountId: null }] };
-  if (p === "/teacher/settings") return { integrations: { supabase: false, ghl: false, storage: false }, cardSaving: false, referralMail: false };
+  if (p === "/teacher/settings") return { integrations: { supabase: false, storage: false }, cardSaving: false, referralMail: false };
   if (p.endsWith("/playback")) throw new Error("Sample mode: no video file is connected.");
   if (opts.method === "POST" || opts.method === "PUT") throw new Error("Sample mode: nothing is saved or sent.");
   throw new Error("Sample mode: not available.");

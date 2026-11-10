@@ -22,8 +22,95 @@ export interface AccountRecord {
 
 export interface StudentRecord extends StudentSummary {
   email: string | null;
-  ghlContactId: string;
-  billingContactId: string;
+  /** The teacher who owns this student. RLS lets a teacher read only their own students' records. */
+  teacherAccountId: string | null;
+  /** The billing contact (payer) row in Supabase. A child's payer is a guardian; an adult pays for themself. */
+  payerId: string | null;
+  /** Legacy GoHighLevel references. Optional, kept only for migration. Nothing at runtime reads them. */
+  ghlContactId: string | null;
+  billingContactId: string | null;
+}
+
+export interface NewStudentInput {
+  fullName: string;
+  isMinor: boolean;
+  email: string | null;
+  guardianName: string | null;
+  guardianEmail: string | null;
+  format: StudentFormat;
+  teacherAccountId: string | null;
+}
+
+export type LessonStatus = "scheduled" | "completed" | "cancelled" | "rescheduled" | "no_show";
+
+export interface LessonRecord {
+  id: string;
+  studentId: string;
+  teacherAccountId: string | null;
+  startsAt: string;
+  endsAt: string;
+  locationKind: "in_person" | "zoom";
+  location: string;
+  zoomUrl: string | null;
+  status: LessonStatus;
+  cancelledAt: string | null;
+  cancellationReason: string | null;
+  rescheduledFromId: string | null;
+  createdAt: string;
+}
+
+export interface NewLessonInput {
+  studentId: string;
+  teacherAccountId: string | null;
+  startsAt: string;
+  endsAt: string;
+  locationKind: "in_person" | "zoom";
+  location: string;
+  zoomUrl: string | null;
+  createdByAccountId: string;
+  source: "teacher" | "portal" | "import";
+  rescheduledFromId?: string | null;
+}
+
+export type InvoiceRecordStatus = "draft" | "sent" | "partially_paid" | "paid" | "void";
+
+export interface InvoiceRecord {
+  id: string;
+  number: number;
+  studentId: string;
+  payerId: string | null;
+  payerName: string;
+  title: string;
+  currency: string;
+  totalCents: number;
+  amountPaidCents: number;
+  status: InvoiceRecordStatus;
+  issueDate: string;
+  dueDate: string;
+  createdAt: string;
+  lines: { label: string; amountCents: number; lessonId: string | null }[];
+}
+
+export interface NewInvoiceInput {
+  studentId: string;
+  payerId: string | null;
+  title: string;
+  issueDate: string;
+  dueDate: string;
+  status: "draft" | "sent";
+  lines: { label: string; amountCents: number; lessonId: string | null }[];
+  createdByAccountId: string;
+}
+
+export interface PaymentRecord {
+  id: string;
+  invoiceId: string;
+  payerId: string | null;
+  amountCents: number;
+  method: "manual" | "cash" | "check" | "card" | "bank_transfer" | "other";
+  status: "pending" | "succeeded" | "failed" | "refunded";
+  paidAt: string;
+  note: string;
 }
 
 export interface InvitationRecord {
@@ -74,10 +161,30 @@ export interface PortalStore {
   getStudent(id: string): Promise<StudentRecord | null>;
   getStudents(ids: string[]): Promise<StudentRecord[]>;
   listStudents(): Promise<StudentRecord[]>;
-  /** Throws if the database can't hold a new student yet, before any outside system is touched. */
+  /** Throws a 503 if the database is missing the core-data migration (0005). */
   checkStudentSchema(): Promise<void>;
-  /** Null when the GoHighLevel contact is already linked to another student. */
-  createStudent(input: { fullName: string; isMinor: boolean; email: string | null; guardianName: string | null; guardianEmail: string | null; format: StudentFormat; ghlContactId: string; billingContactId: string }): Promise<StudentRecord | null>;
+  /**
+   * Creates the student in Supabase with its guardian link (children) and billing contact.
+   * An existing guardian with the same email is reused, so siblings share one payer. No outside system is called.
+   */
+  createStudent(input: NewStudentInput): Promise<{ student: StudentRecord; guardian: "created" | "reused" | null }>;
+
+  /** The studio's first active teacher. New students without an explicit teacher are assigned here. */
+  studioTeacherAccountId(): Promise<string | null>;
+
+  listLessons(query: { studentIds?: string[]; teacherAccountId?: string; from?: string; to?: string }): Promise<LessonRecord[]>;
+  getLesson(id: string): Promise<LessonRecord | null>;
+  /** Inserts the lesson and its booking row. */
+  createLesson(input: NewLessonInput): Promise<LessonRecord>;
+  /** Marks a lesson cancelled (with who and why) or rescheduled. */
+  closeLesson(id: string, input: { status: "cancelled" | "rescheduled"; byAccountId: string; reason: string | null }): Promise<LessonRecord>;
+
+  listInvoices(query: { studentIds?: string[]; includeDrafts: boolean }): Promise<InvoiceRecord[]>;
+  getInvoice(id: string): Promise<InvoiceRecord | null>;
+  createInvoice(input: NewInvoiceInput): Promise<InvoiceRecord>;
+  updateInvoiceStatus(id: string, patch: { status: InvoiceRecordStatus; amountPaidCents?: number }): Promise<InvoiceRecord>;
+  listPayments(invoiceIds: string[]): Promise<PaymentRecord[]>;
+  recordPayment(input: { invoiceId: string; payerId: string | null; amountCents: number; method: PaymentRecord["method"]; note: string; recordedByAccountId: string }): Promise<PaymentRecord>;
   studentCounts(): Promise<Record<string, { notes: number; videos: number; assignments: number }>>;
   studentAccounts(): Promise<Record<string, { accountId: string; status: "active" | "suspended" }>>;
 

@@ -4,7 +4,7 @@ import { createApp } from "../server/app";
 import { loadConfig, safeInviteAllowlist } from "../server/config";
 import { isEmailOtp } from "../shared/email-otp";
 import { portalInvitePage } from "../server/services/invitations";
-import { buildDeps, fakeGhl, STUDENT_A } from "./helpers";
+import { buildDeps, STUDENT_A } from "./helpers";
 
 const ARZO = "luperdev@gmail.com";
 const PREVIEW = "https://preview.example.com";
@@ -18,7 +18,7 @@ function teacherApp(over: { safeMode?: boolean; allowlist?: string[]; appUrl?: s
   const sendInvoice = vi.fn();
   const createContact = vi.fn();
   const createStudent = vi.fn();
-  const deps = buildDeps({ teach: { role: "teacher" } }, fakeGhl({ sendInvoice, createContact }), {
+  const deps = buildDeps({ teach: { role: "teacher" } }, {
     createInvitation, attachInvitationAuthUser, revokeInvitation, audit, createStudent,
   } as any);
   deps.config.safeMode = over.safeMode ?? false;
@@ -89,7 +89,7 @@ describe("portal invitation email", () => {
     expect(sendPortalInvite).not.toHaveBeenCalled();
   });
 
-  it("does not create a student or a GoHighLevel contact when the teacher invites", async () => {
+  it("does not create a student when the teacher invites", async () => {
     const { post, sendPortalInvite, createInvitation, createStudent, createContact } = teacherApp({ safeMode: true });
     const res = await post({ email: "LuperDev@gmail.com", name: "Arzo Luper" });
     expect(res.status).toBe(200);
@@ -143,7 +143,7 @@ describe("portal invitation email", () => {
   });
 
   it("a revoked code cannot be used to sign up", async () => {
-    const deps = buildDeps({}, null, {
+    const deps = buildDeps({}, {
       findInvitationByHash: async () => ({ id: "i", status: "revoked", expiresAt: new Date(Date.now() + 864e5).toISOString(), preview: {}, email: ARZO }),
     } as any);
     const res = await request(createApp(deps)).post("/api/invitations/verify").send({ credential: "old-token-value" });
@@ -166,16 +166,11 @@ describe("accepting an invitation", () => {
     preview: { firstName: "Arzo", studentLine: "Not enrolled yet", accountFor: "Arzo Luper · student", lessons: "", format: "In person" },
   };
 
-  it("creates the student from Arzo's existing contact only after sign-up", async () => {
-    const createContact = vi.fn();
-    const createStudent = vi.fn(async (i: any) => ({ ...i, id: "33333333-3333-4333-8333-333333333333", firstName: "Arzo", styleLine: "", studentSince: null }));
+  it("creates Arzo's student row in Supabase only after sign-up, with no GoHighLevel id", async () => {
+    const createStudent = vi.fn(async (i: any) => ({ student: { ...i, id: "33333333-3333-4333-8333-333333333333", firstName: "Arzo", styleLine: "", studentSince: null }, guardian: null }));
     const createAccountForInvitation = vi.fn(async () => undefined);
     const createUser = vi.fn(async () => "auth-user");
-    const ghl = fakeGhl({
-      createContact,
-      findContactByEmail: async (email) => (email === ARZO ? { id: "Nk2ovYQlqpRZJT3fwJzR", name: "Arzo Luper", email } : null),
-    });
-    const deps = buildDeps({}, ghl, {
+    const deps = buildDeps({}, {
       findInvitationByHash: async () => invite,
       claimInvitation: async () => true,
       createStudent,
@@ -185,36 +180,39 @@ describe("accepting an invitation", () => {
     (deps.auth as any).createUser = createUser;
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: token, password: "a-long-enough-password" });
     expect(res.status).toBe(200);
-    expect(createContact).not.toHaveBeenCalled();
-    expect((createStudent.mock.calls as any)[0][0]).toMatchObject({ fullName: "Arzo Luper", email: ARZO, ghlContactId: "Nk2ovYQlqpRZJT3fwJzR", billingContactId: "Nk2ovYQlqpRZJT3fwJzR", isMinor: false });
+    const saved = (createStudent.mock.calls as any)[0][0];
+    expect(saved).toMatchObject({ fullName: "Arzo Luper", email: ARZO, isMinor: false, teacherAccountId: "teach" });
+    expect(saved.ghlContactId).toBeUndefined();
+    expect(saved.billingContactId).toBeUndefined();
     expect((createAccountForInvitation.mock.calls as any)[0][0].studentIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
     expect(createUser).toHaveBeenCalled();
   });
 
-  it("removes a new contact and audits it when the student row cannot be saved", async () => {
-    const deleteContact = vi.fn(async () => undefined);
-    const audit = vi.fn(async () => undefined);
+  it("reopens the invitation and creates no login when the student row cannot be saved", async () => {
     const createUser = vi.fn();
     const releaseInvitation = vi.fn(async () => undefined);
-    const ghl = fakeGhl({
-      deleteContact,
-      findContactByEmail: async () => null,
-      createContact: async () => ({ contact: { id: "new-contact", name: "Arzo Luper", email: ARZO }, created: true }),
-    });
-    const deps = buildDeps({}, ghl, {
+    const deps = buildDeps({}, {
       findInvitationByHash: async () => invite,
       claimInvitation: async () => true,
       releaseInvitation,
       createStudent: async () => { throw new Error("db"); },
-      audit,
       listStudents: async () => [],
     } as any);
     (deps.auth as any).createUser = createUser;
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: token, password: "a-long-enough-password" });
     expect(res.status).toBe(500);
-    expect(deleteContact).toHaveBeenCalledWith("new-contact");
-    expect(audit).toHaveBeenCalledWith(null, "student.create_failed", "", { createdContactIds: ["new-contact"] });
     expect(createUser).not.toHaveBeenCalled();
+    expect(releaseInvitation).toHaveBeenCalledWith("i");
+  });
+
+  it("refuses to enroll a second student with Arzo's email", async () => {
+    const createStudent = vi.fn();
+    const releaseInvitation = vi.fn(async () => undefined);
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite, claimInvitation: async () => true, releaseInvitation, createStudent } as any);
+    (deps.auth as any).createUser = vi.fn();
+    const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: token, password: "a-long-enough-password" });
+    expect(res.status).toBe(409);
+    expect(createStudent).not.toHaveBeenCalled();
     expect(releaseInvitation).toHaveBeenCalledWith("i");
   });
 });
@@ -237,12 +235,10 @@ describe("email code verification", () => {
   it("verifies Arzo's code once, then creates the student and returns a session", async () => {
     const verifyEmailOtp = vi.fn(async () => ({ userId: "auth-arzo", accessToken: "access", refreshToken: "refresh" }));
     const createUser = vi.fn();
-    const createContact = vi.fn();
-    const createStudent = vi.fn(async (i: any) => ({ ...i, id: "33333333-3333-4333-8333-333333333333", firstName: "Arzo", styleLine: "", studentSince: null }));
+    const createStudent = vi.fn(async (i: any) => ({ student: { ...i, id: "33333333-3333-4333-8333-333333333333", firstName: "Arzo", styleLine: "", studentSince: null }, guardian: null }));
     const createAccountForInvitation = vi.fn(async () => undefined);
     let open = true;
-    const ghl = fakeGhl({ createContact, findContactByEmail: async (email) => (email === ARZO ? { id: "Nk2ovYQlqpRZJT3fwJzR", name: "Arzo Luper", email } : null) });
-    const deps = buildDeps({}, ghl, {
+    const deps = buildDeps({}, {
       findPendingInvitationByEmail: async () => (open ? pending : null),
       claimInvitation: async () => { open = false; return true; },
       createStudent,
@@ -257,9 +253,8 @@ describe("email code verification", () => {
     expect(ok.body).toMatchObject({ accessToken: "access", refreshToken: "refresh", email: ARZO });
     expect(verifyEmailOtp).toHaveBeenCalledTimes(1);
     expect(verifyEmailOtp).toHaveBeenCalledWith(ARZO, code);
-    expect(createContact).not.toHaveBeenCalled();
     expect(createUser).not.toHaveBeenCalled();
-    expect((createStudent.mock.calls as any)[0][0]).toMatchObject({ email: ARZO, ghlContactId: "Nk2ovYQlqpRZJT3fwJzR" });
+    expect((createStudent.mock.calls as any)[0][0]).toMatchObject({ email: ARZO, isMinor: false });
     expect((createAccountForInvitation.mock.calls as any)[0][0].studentIds).toEqual(["33333333-3333-4333-8333-333333333333"]);
     const again = await request(app).post("/api/invitations/verify-code").send({ email: ARZO, code });
     expect(again.status).toBe(404);
@@ -268,7 +263,7 @@ describe("email code verification", () => {
 
   it("rejects an expired code before asking Supabase", async () => {
     const verifyEmailOtp = vi.fn();
-    const deps = buildDeps({}, fakeGhl(), {
+    const deps = buildDeps({}, {
       findPendingInvitationByEmail: async () => ({ ...pending, expiresAt: new Date(Date.now() - 1000).toISOString() }),
     } as any);
     (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
@@ -282,7 +277,7 @@ describe("email code verification", () => {
     const verifyEmailOtp = vi.fn(async () => null);
     const createStudent = vi.fn();
     const claimInvitation = vi.fn();
-    const deps = buildDeps({}, fakeGhl(), { findPendingInvitationByEmail: async () => pending, createStudent, claimInvitation } as any);
+    const deps = buildDeps({}, { findPendingInvitationByEmail: async () => pending, createStudent, claimInvitation } as any);
     (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
     const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
     expect(res.status).toBe(401);
@@ -294,7 +289,7 @@ describe("email code verification", () => {
     expect(isEmailOtp("48291370")).toBe(true);
     for (const code of ["482913", "48291370", "1234567890"]) {
       const verifyEmailOtp = vi.fn(async () => null);
-      const deps = buildDeps({}, null, { findPendingInvitationByEmail: async () => pending } as any);
+      const deps = buildDeps({}, { findPendingInvitationByEmail: async () => pending } as any);
       (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
       const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
       expect(res.status).toBe(401);
@@ -302,7 +297,7 @@ describe("email code verification", () => {
     }
     for (const code of ["12345", "12345678901"]) {
       const verifyEmailOtp = vi.fn();
-      const deps = buildDeps({}, null, { findPendingInvitationByEmail: async () => pending } as any);
+      const deps = buildDeps({}, { findPendingInvitationByEmail: async () => pending } as any);
       (deps.auth as any).verifyEmailOtp = verifyEmailOtp;
       const res = await request(createApp(deps)).post("/api/invitations/verify-code").send({ email: ARZO, code });
       expect(res.status).toBe(400);
@@ -311,7 +306,7 @@ describe("email code verification", () => {
   });
 
   it("rate limits code attempts", async () => {
-    const app = createApp(buildDeps({}, null, { findPendingInvitationByEmail: async () => null } as any));
+    const app = createApp(buildDeps({}, { findPendingInvitationByEmail: async () => null } as any));
     let last = 0;
     for (let i = 0; i < 9; i++) last = (await request(app).post("/api/invitations/verify-code").send({ email: ARZO, code: "123456" })).status;
     expect(last).toBe(429);

@@ -6,7 +6,7 @@ export default function PaymentHistorySection({ v }: { v: VM }) {
     <section id="portal-payments" style={{ gridColumn: "1/-1", background: "#fff", border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", boxShadow: "0 1px 2px rgba(17,22,27,.04)", padding: "28px" }}>
       <span style={{ fontSize: "11px", letterSpacing: ".25em", textTransform: "uppercase", fontWeight: "600", color: "#9C5F22" }}>Billing</span>
       <h2 style={{ fontFamily: "'Cinzel',Georgia,serif", fontWeight: "500", fontSize: "20px", letterSpacing: ".06em", textTransform: "uppercase", color: "#1D2A44", margin: "6px 0 8px" }}>Payment history</h2>
-      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "rgba(17,22,27,.55)", lineHeight: 1.5 }}>Read from GoHighLevel. Nothing is charged from this page.</p>
+      <p style={{ margin: "0 0 16px", fontSize: "13px", color: "rgba(17,22,27,.55)", lineHeight: 1.5 }}>Recorded by your teacher. Nothing is charged from this page.</p>
       {v.paymentUnavailable && <div style={{ fontSize: "14px", color: "rgba(17,22,27,.65)" }}>Payment history can't be shown right now. Please check back shortly.</div>}
       {!v.paymentUnavailable && rows.length === 0 && <div style={{ fontSize: "14px", color: "rgba(17,22,27,.65)" }}>No payments yet.</div>}
       {rows.length > 0 && (
