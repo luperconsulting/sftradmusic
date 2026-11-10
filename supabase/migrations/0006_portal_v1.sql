@@ -12,7 +12,7 @@
 --   * Stripe test-mode idempotency (only used when CARD_PAYMENTS_ENABLED=true)
 -- RLS: select-only policies. Students and guardians see their linked records, teachers their own students.
 
-create extension if not exists btree_gist;
+create extension if not exists btree_gist with schema extensions;
 
 -- ---- studio settings ----------------------------------------------------------------------------------------
 create table public.studio_settings (
@@ -57,6 +57,9 @@ begin
     execute format('alter table public.lessons drop constraint %I', c.conname);
   end loop;
 end $$;
+
+-- Every lesson belongs to a teacher, so the exclusion constraint below always applies. The server always sets it.
+alter table public.lessons alter column teacher_account_id set not null;
 
 alter table public.lessons
   add column if not exists hold_expires_at timestamptz,
@@ -166,9 +169,14 @@ alter table public.referral_codes enable row level security;
 alter table public.referrals enable row level security;
 alter table public.referral_credits enable row level security;
 
--- Families need the Zelle recipient and notice rules; any signed-in account may read settings and hours.
-create policy studio_settings_read on public.studio_settings for select using (auth.uid() is not null);
-create policy lesson_hours_read on public.lesson_hours for select using (auth.uid() is not null);
+-- A teacher reads their own settings and hours. A family reads them only for a teacher of a student linked to them
+-- (they need the Zelle recipient and notice rules).
+create policy studio_settings_read on public.studio_settings for select using (
+  teacher_account_id = public.current_account_id()
+  or exists (select 1 from public.students s where s.teacher_account_id = studio_settings.teacher_account_id and public.is_linked_to_student(s.id)));
+create policy lesson_hours_read on public.lesson_hours for select using (
+  teacher_account_id = public.current_account_id()
+  or exists (select 1 from public.students s where s.teacher_account_id = lesson_hours.teacher_account_id and public.is_linked_to_student(s.id)));
 create policy lesson_series_read on public.lesson_series for select using (public.can_see_student_core(student_id));
 create policy credit_ledger_read on public.credit_ledger for select using (public.can_see_student_core(student_id));
 create policy referral_codes_read on public.referral_codes for select using (public.can_see_student_core(student_id));
@@ -179,7 +187,7 @@ create policy referral_credits_read on public.referral_credits for select using 
 -- stripe_events: no policy, service role only.
 
 revoke all on table public.studio_settings, public.lesson_hours, public.lesson_series, public.credit_ledger,
-  public.stripe_events, public.referral_codes, public.referrals, public.referral_credits from anon, public;
+  public.stripe_events, public.referral_codes, public.referrals, public.referral_credits from anon, authenticated, public;
 grant select on table public.studio_settings, public.lesson_hours, public.lesson_series, public.credit_ledger,
   public.referral_codes, public.referrals, public.referral_credits to authenticated;
 

@@ -66,7 +66,8 @@ create index if not exists students_payer_idx on public.students (payer_id);
 create table public.lessons (
   id uuid primary key default gen_random_uuid(),
   student_id uuid not null references public.students (id) on delete cascade,
-  teacher_account_id uuid references public.accounts (id) on delete set null,
+  -- A teacher account with lessons can't be deleted out from under them (0006 also makes this column not null).
+  teacher_account_id uuid references public.accounts (id) on delete restrict,
   starts_at timestamptz not null,
   ends_at timestamptz not null,
   location_kind text not null default 'in_person' check (location_kind in ('in_person', 'zoom')),
@@ -225,7 +226,7 @@ create policy payments_read on public.payments for select using (
 
 -- Anonymous keys get nothing. Signed-in users can only select, and only what the policies above allow.
 revoke all on table public.guardians, public.student_guardians, public.billing_contacts, public.lessons,
-  public.bookings, public.invoices, public.invoice_lines, public.payments from anon, public;
+  public.bookings, public.invoices, public.invoice_lines, public.payments from anon, authenticated, public;
 grant select on table public.guardians, public.student_guardians, public.billing_contacts, public.lessons,
   public.bookings, public.invoices, public.invoice_lines, public.payments to authenticated;
 

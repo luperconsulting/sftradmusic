@@ -479,7 +479,58 @@ describe("ops summary for the Grok bot", () => {
   });
 });
 
+describe("lessons always have a teacher", () => {
+  it("the store refuses a lesson with no teacher, as the database's not-null column does", async () => {
+    const env = setup();
+    await expect(env.deps.store!.createLesson({ studentId: STUDENT_A, teacherAccountId: null as unknown as string, startsAt: WED_10, endsAt: WED_11, locationKind: "in_person", location: "", zoomUrl: null, createdByAccountId: "arzo", source: "portal" }))
+      .rejects.toMatchObject({ status: 400, code: "no_teacher" });
+    await expect(env.deps.store!.createLesson({ studentId: STUDENT_A, teacherAccountId: "", startsAt: WED_10, endsAt: WED_11, locationKind: "in_person", location: "", zoomUrl: null, createdByAccountId: "arzo", source: "portal" }))
+      .rejects.toMatchObject({ code: "no_teacher" });
+    expect(env.tables.lessons).toHaveLength(0);
+  });
+
+  it("refuses to book, from the portal or the teacher side, when no teacher can be found, and creates nothing", async () => {
+    const env = setup();
+    for (const s of env.tables.students) s.teacherAccountId = null;
+    env.deps.store!.studioTeacherAccountId = async () => null;
+    const family = await book(env);
+    expect(family.status).toBe(503);
+    expect(family.body.error.code).toBe("no_teacher");
+    const teacher = await env.as("teach").post("/api/teacher/lessons", { studentId: STUDENT_A, startTime: WED_10, location: "Zoom" });
+    expect(teacher.body.error.code).toBe("no_teacher");
+    expect(env.tables.lessons).toHaveLength(0);
+    expect(env.tables.invoices).toHaveLength(0);
+  });
+
+  it("an unassigned student's lesson goes to the studio teacher", async () => {
+    const env = setup();
+    for (const s of env.tables.students) s.teacherAccountId = null;
+    expect((await env.as("teach").post("/api/teacher/lessons", { studentId: STUDENT_A, startTime: WED_10, location: "Zoom" })).status).toBe(200);
+    expect(env.tables.lessons[0].teacherAccountId).toBe(TEACHER_ACCOUNT);
+  });
+
+  it("the migrations make teacher_account_id required before the exclusion constraint, and restrict teacher deletes", () => {
+    const m5 = readFileSync("supabase/migrations/0005_core_data.sql", "utf8");
+    const m6 = readFileSync("supabase/migrations/0006_portal_v1.sql", "utf8");
+    expect(m5).toMatch(/create table public\.lessons \([\s\S]*?teacher_account_id uuid references public\.accounts \(id\) on delete restrict,/);
+    const notNull = m6.indexOf("alter table public.lessons alter column teacher_account_id set not null;");
+    expect(notNull).toBeGreaterThan(0);
+    expect(notNull).toBeLessThan(m6.indexOf("add constraint lessons_no_overlap"));
+    expect(m6).toContain("create extension if not exists btree_gist with schema extensions;");
+  });
+});
+
 describe("migrations", () => {
+  it("scope studio settings and lesson hours to the teacher and their linked families, not every signed-in user", () => {
+    const sql = readFileSync("supabase/migrations/0006_portal_v1.sql", "utf8");
+    expect(sql).not.toContain("auth.uid() is not null");
+    for (const t of ["studio_settings", "lesson_hours"]) {
+      expect(sql).toContain(`create policy ${t}_read on public.${t} for select using (
+  teacher_account_id = public.current_account_id()
+  or exists (select 1 from public.students s where s.teacher_account_id = ${t}.teacher_account_id and public.is_linked_to_student(s.id)));`);
+    }
+  });
+
   it("enable RLS on every table they create and never grant anon access", () => {
     for (const file of ["0005_core_data.sql", "0006_portal_v1.sql"]) {
       const sql = readFileSync(`supabase/migrations/${file}`, "utf8");
@@ -488,6 +539,9 @@ describe("migrations", () => {
       for (const t of tables) expect(sql, `${file}: ${t}`).toContain(`alter table public.${t} enable row level security`);
       expect(sql).not.toMatch(/grant [^;]* to anon/);
       expect(sql).toMatch(/NOT APPLIED/);
+      // Default privileges are revoked from every role first; authenticated then gets select only.
+      for (const revoke of sql.match(/revoke all on table[^;]*;/g) ?? []) expect(revoke).toMatch(/from anon, authenticated, public;$/);
+      expect(sql).toMatch(/revoke all on table[^;]*from anon, authenticated, public;\s*grant select on table[^;]*to authenticated;/);
     }
   });
 });

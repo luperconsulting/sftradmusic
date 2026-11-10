@@ -46,7 +46,8 @@ export type LessonStatus = "scheduled" | "pending_payment" | "completed" | "canc
 export interface LessonRecord {
   id: string;
   studentId: string;
-  teacherAccountId: string | null;
+  /** Required: every lesson belongs to a teacher (not null in the database). */
+  teacherAccountId: string;
   startsAt: string;
   endsAt: string;
   locationKind: "in_person" | "zoom";
@@ -66,7 +67,8 @@ export interface LessonRecord {
 
 export interface NewLessonInput {
   studentId: string;
-  teacherAccountId: string | null;
+  /** Required. The store refuses a lesson without a teacher, and so does the database. */
+  teacherAccountId: string;
   startsAt: string;
   endsAt: string;
   locationKind: "in_person" | "zoom";

@@ -90,10 +90,12 @@ export function memoryCoreStore(tables: CoreTables = emptyTables()) {
     },
     async getLesson(id: string) { const l = tables.lessons.find((x) => x.id === id); return l ? { ...l } : null; },
     async createLesson(input: Parameters<PortalStore["createLesson"]>[0]) {
+      // teacher_account_id is not null in the database.
+      if (!input.teacherAccountId) throw new ApiError(400, "no_teacher", "A lesson needs a teacher.");
       if (Date.parse(input.endsAt) - Date.parse(input.startsAt) !== 3600000) throw new Error("lessons_sixty_minutes");
       const s = Date.parse(input.startsAt), e = Date.parse(input.endsAt);
       // lessons_no_overlap: live lessons for one teacher may not overlap.
-      if (input.teacherAccountId && tables.lessons.some((l) => live(l) && l.teacherAccountId === input.teacherAccountId && Date.parse(l.startsAt) < e && s < Date.parse(l.endsAt))) {
+      if (tables.lessons.some((l) => live(l) && l.teacherAccountId === input.teacherAccountId && Date.parse(l.startsAt) < e && s < Date.parse(l.endsAt))) {
         throw new ApiError(409, "slot_unavailable", "That time was just taken. Please choose another.");
       }
       const lesson: LessonRecord = {

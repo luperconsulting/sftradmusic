@@ -87,6 +87,7 @@ const toReferralCredit = (r: any): ReferralCreditRecord => ({
   usedAt: r.used_at,
   createdAt: r.created_at,
 });
+const noTeacher = () => new ApiError(400, "no_teacher", "A lesson needs a teacher.");
 const isUniqueViolation = (error: { code?: string } | null) => error?.code === "23505";
 const toInvoice = (r: any): InvoiceRecord => ({
   id: r.id,
@@ -281,6 +282,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       return r ? toLesson(r) : null;
     },
     async createLesson(input) {
+      if (!input.teacherAccountId) throw noTeacher();
       const res = await db.from("lessons").insert({
         student_id: input.studentId,
         teacher_account_id: input.teacherAccountId,
@@ -298,6 +300,8 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       }).select("*").single();
       // 23P01: the exclusion constraint caught an overlapping live lesson for this teacher.
       if (res.error?.code === "23P01") throw new ApiError(409, "slot_unavailable", "That time was just taken. Please choose another.");
+      // 23502: teacher_account_id is not null in the database.
+      if (res.error?.code === "23502") throw noTeacher();
       const row: any = must(res);
       const booking = await db.from("bookings").insert({ lesson_id: row.id, student_id: input.studentId, booked_by_account_id: input.createdByAccountId, source: input.source });
       if (booking.error) {
