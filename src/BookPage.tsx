@@ -1,12 +1,9 @@
-import React, { useState } from "react";
 import { ArrowLeft } from "lucide-react";
+import BookingWidget from "./booking/BookingWidget";
 
 export default function BookPage() {
-  // Hide the "Loading calendar" placeholder once the GoHighLevel iframe has loaded
-  const [calendarLoaded, setCalendarLoaded] = useState(false);
-
   return (
-    <div className="h-dvh bg-[#1D2A44] text-white flex flex-col font-sans selection:bg-[#C27D38] selection:text-white">
+    <div className="min-h-dvh bg-[#1D2A44] text-white flex flex-col font-sans selection:bg-[#C27D38] selection:text-white">
       {/* Skip link: visually hidden until focused with the keyboard */}
       <a
         href="#main-content"
@@ -35,27 +32,11 @@ export default function BookPage() {
         </div>
       </header>
 
-      {/* The calendar card fills whatever height is left below the header, so the page itself never scrolls */}
-      <main id="main-content" className="flex-1 min-h-0 flex flex-col px-4 md:px-6 py-4 md:py-6">
-        <h1 className="shrink-0 font-serif text-xl md:text-2xl tracking-wide text-white uppercase font-normal text-center mb-3 md:mb-4">
+      <main id="main-content" className="flex-1 px-4 md:px-6 py-6 md:py-10">
+        <h1 className="font-serif text-xl md:text-2xl tracking-wide text-white uppercase font-normal text-center mb-4 md:mb-6">
           Book a Free Intro Call
         </h1>
-
-        <div className="flex-1 min-h-0 w-full max-w-6xl mx-auto bg-white rounded-sm shadow-lg overflow-hidden relative" id="booking-calendar">
-          {!calendarLoaded && (
-            <div className="absolute inset-0 flex flex-col items-center justify-center gap-4 text-[#11161B]/60" aria-live="polite">
-              <span className="w-8 h-8 rounded-full border-2 border-[#C27D38]/30 border-t-[#9C5F22] animate-spin" aria-hidden="true"></span>
-              <span className="text-xs tracking-widest uppercase font-semibold">Loading calendar…</span>
-            </div>
-          )}
-          <iframe
-            src="https://api.leadconnectorhq.com/widget/booking/vc5JhcEjhKFs3MpJyj9p"
-            title="Book intro call"
-            className="w-full h-full border-0 relative"
-            id="sftradmusic-intro-call"
-            onLoad={() => setCalendarLoaded(true)}
-          ></iframe>
-        </div>
+        <BookingWidget />
       </main>
     </div>
   );

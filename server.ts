@@ -1,10 +1,15 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { createApp, defaultDeps } from "./server/app.js";
 
 async function startServer() {
   const app = express();
   const PORT = 3000;
+
+  // The booking API has its own error handling
+  const api = createApp(defaultDeps());
+  app.use((req, res, next) => (req.path.startsWith("/api/") && req.path !== "/api/book-lesson" ? api(req, res, next) : next()));
 
   // Crucial middleware to handle JSON request bodies
   app.use(express.json());
