@@ -8,12 +8,15 @@
     "build": "vite build && esbuild server.ts --bundle --platform=node --format=cjs --packages=external --sourcemap --outfile=build/server.cjs",
     "start": "node build/server.cjs",
     "clean": "rm -rf dist build",
-    "lint": "tsc --noEmit"
+    "lint": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@tailwindcss/vite": "^4.1.14",
+    "@vercel/oidc": "^4.0.8",
     "@vitejs/plugin-react": "^5.0.4",
     "express": "^4.21.2",
+    "google-auth-library": "^11.3.4",
     "lucide-react": "^0.546.0",
     "motion": "^12.23.24",
     "react": "^19.0.1",
@@ -23,11 +26,14 @@
   "devDependencies": {
     "@types/express": "^4.17.21",
     "@types/node": "^22.14.0",
+    "@types/supertest": "^6.0.3",
     "autoprefixer": "^10.4.21",
     "esbuild": "^0.25.0",
+    "supertest": "^7.3.2",
     "tailwindcss": "^4.1.14",
     "tsx": "^4.21.0",
     "typescript": "~5.8.2",
-    "vite": "^6.2.3"
+    "vite": "^6.2.3",
+    "vitest": "^3.2.7"
   }
 }
