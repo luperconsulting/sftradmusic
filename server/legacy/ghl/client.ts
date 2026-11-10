@@ -1,7 +1,8 @@
+// LEGACY. Kept for migrating old GoHighLevel records. The portal never imports this at runtime; see README.md.
 // GoHighLevel API v2 client. Every path and field comes from GoHighLevel's published OpenAPI files
 // (github.com/GoHighLevel/highlevel-api-docs: apps/calendars.json, contacts.json, invoices.json).
-import { ApiError } from "../http.js";
-import type { InvoiceDTO, InvoiceStatus, LessonDTO } from "../../shared/portal-types.js";
+import { ApiError } from "../../http.js";
+import type { InvoiceDTO, InvoiceStatus, LessonDTO } from "../../../shared/portal-types.js";
 
 const BASE = "https://services.leadconnectorhq.com";
 const CALENDAR_VERSION = "2021-04-15";
@@ -234,6 +235,7 @@ export function toInvoiceDTO(raw: any, safeMode = false): InvoiceDTO {
     currency: raw.currency ?? "USD",
     contactId: raw.contactDetails?.id ?? "",
     contactName: raw.contactDetails?.name ?? "",
+    studentId: "",
     lines: (raw.invoiceItems ?? []).map((i: any) => ({ label: i.name ?? "Item", amount: Number(i.amount ?? 0) * Number(i.qty ?? 1) })),
     payUrl: invoicePayUrl(raw, safeMode),
   };

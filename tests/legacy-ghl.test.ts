@@ -1,11 +1,9 @@
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import request from "supertest";
-import { createApp } from "../server/app";
-import { ghlSafeMode, loadConfig } from "../server/config";
-import { createGhlClient } from "../server/integrations/ghl";
-import { buildDeps, fakeGhl, rawInvoice, STUDENT_A } from "./helpers";
+import { previewSafeMode, loadConfig } from "../server/config";
+import { createGhlClient } from "../server/legacy/ghl/client";
+import { ghlConfigFromEnv } from "../server/legacy/ghl/config";
 
 const ARZO_EMAIL = "luperdev@gmail.com";
 const ARZO_CONTACT = "Nk2ovYQlqpRZJT3fwJzR";
@@ -22,7 +20,7 @@ const ghlConfig = (safeMode?: boolean) => ({
 
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
 
-describe("GHL_SAFE_MODE", () => {
+describe("SAFE_MODE", () => {
   const ghlEnv = {
     GHL_PRIVATE_INTEGRATION_TOKEN: TOKEN,
     GHL_LOCATION_ID: "loc",
@@ -30,20 +28,28 @@ describe("GHL_SAFE_MODE", () => {
   };
 
   it("is on for local and Preview, and off for production, unless set explicitly", () => {
-    expect(ghlSafeMode({})).toBe(true);
-    expect(ghlSafeMode({ NODE_ENV: "development" })).toBe(true);
-    expect(ghlSafeMode({ NODE_ENV: "production" })).toBe(false);
-    expect(ghlSafeMode({ NODE_ENV: "production", VERCEL_ENV: "preview" })).toBe(true);
-    expect(ghlSafeMode({ NODE_ENV: "production", VERCEL_ENV: "production" })).toBe(false);
-    expect(ghlSafeMode({ VERCEL_ENV: "production", GHL_SAFE_MODE: "true" })).toBe(true);
-    expect(ghlSafeMode({ GHL_SAFE_MODE: "false" })).toBe(false);
-    expect(ghlSafeMode({ GHL_SAFE_MODE: "0" })).toBe(false);
-    expect(loadConfig({ ...ghlEnv, VERCEL_ENV: "preview", NODE_ENV: "production" }).ghl?.safeMode).toBe(true);
-    expect(loadConfig({ ...ghlEnv, VERCEL_ENV: "production" }).ghl?.safeMode).toBe(false);
+    expect(previewSafeMode({})).toBe(true);
+    expect(previewSafeMode({ NODE_ENV: "development" })).toBe(true);
+    expect(previewSafeMode({ NODE_ENV: "production" })).toBe(false);
+    expect(previewSafeMode({ NODE_ENV: "production", VERCEL_ENV: "preview" })).toBe(true);
+    expect(previewSafeMode({ NODE_ENV: "production", VERCEL_ENV: "production" })).toBe(false);
+    expect(previewSafeMode({ VERCEL_ENV: "production", SAFE_MODE: "true" })).toBe(true);
+    expect(previewSafeMode({ SAFE_MODE: "false" })).toBe(false);
+    expect(previewSafeMode({ SAFE_MODE: "0" })).toBe(false);
+    // The old variable is no longer read.
+    expect(previewSafeMode({ VERCEL_ENV: "production", GHL_SAFE_MODE: "true" })).toBe(false);
+  });
+
+  it("the portal config ignores every GHL_* variable; only the legacy migration helper reads them", () => {
+    const config = loadConfig({ ...ghlEnv, VERCEL_ENV: "preview" }) as unknown as Record<string, unknown>;
+    expect(config.ghl).toBeUndefined();
+    expect(JSON.stringify(config)).not.toContain(TOKEN);
+    expect(ghlConfigFromEnv(ghlEnv, true)).toMatchObject({ locationId: "loc", safeMode: true });
+    expect(ghlConfigFromEnv({}, true)).toBeNull();
   });
 });
 
-describe("safe mode flags", () => {
+describe("legacy GoHighLevel client (migration only): safe mode flags", () => {
   it("creates a contact as do-not-disturb with the portal-test tag, and looks up Arzo in the configured location", async () => {
     const fetchImpl = vi.fn(async (url: string) => {
       if (String(url).includes("/contacts/search/duplicate")) return json({ contact: { id: ARZO_CONTACT, contactName: "Arzo Luper", email: ARZO_EMAIL } });
@@ -105,20 +111,6 @@ describe("safe mode flags", () => {
     expect(body.action).toBe("email");
     expect(String(body.action)).not.toMatch(/sms/);
     expect((liveFetch.mock.calls[0] as any[])[1].body).not.toContain(TOKEN);
-  });
-
-  it("does not email or text from Pay Now while safe mode is on", async () => {
-    const log = vi.spyOn(console, "info").mockImplementation(() => undefined);
-    const sendInvoice = vi.fn();
-    const base = fakeGhl({ sendInvoice, getInvoice: async () => rawInvoice() });
-    const ghl = { ...base, config: { ...base.config, safeMode: true, token: TOKEN } };
-    const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
-    const res = await request(createApp(buildDeps({ parent }, ghl))).post("/api/invoices/inv1/send-payment-link").set("Authorization", "Bearer parent").send({});
-    expect(res.status).toBe(200);
-    expect(res.body).toMatchObject({ sent: false, suppressed: true, invoiceId: "inv1" });
-    expect(sendInvoice).not.toHaveBeenCalled();
-    expect(log.mock.calls.map((c) => c.join(" ")).join("\n")).not.toContain(TOKEN);
-    log.mockRestore();
   });
 
   it("deletes a contact with GoHighLevel's documented call and does not require a body", async () => {

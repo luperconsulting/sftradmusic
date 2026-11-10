@@ -6,7 +6,8 @@ import { createApp } from "../server/app";
 import { loadConfig } from "../server/config";
 import { supabaseKeyKind } from "../shared/supabase-keys";
 import { hashCredential, newEnrollmentCode } from "../server/services/invitations";
-import { verifyWebhookSignature } from "../server/webhooks";
+import { verifyWebhookSignature } from "../server/legacy/ghl/webhooks";
+import { PAYER_A } from "./helpers";
 import { memoryRateLimiter } from "../server/rateLimit";
 import { buildDeps, STUDENT_A, STUDENT_B } from "./helpers";
 
@@ -59,7 +60,7 @@ describe("role and 2FA enforcement", () => {
   });
 
   it("still lets a password-only session read its profile, so setup can start", async () => {
-    const deps = buildDeps({ p: { ...parent, mfa: false, aal: "aal1" } }, null, { getAccount: async () => ({ id: "p", userId: "p", role: "guardian", status: "active", email: "", displayName: "T U", ghlContactId: null }) });
+    const deps = buildDeps({ p: { ...parent, mfa: false, aal: "aal1" } }, { getAccount: async () => ({ id: "p", userId: "p", role: "guardian", status: "active", email: "", displayName: "T U", ghlContactId: null }) });
     const res = await get(createApp(deps), "/api/me", "p");
     expect(res.status).toBe(200);
     // Only what the client needs to choose the 2FA screen: no name, email or account details.
@@ -67,7 +68,7 @@ describe("role and 2FA enforcement", () => {
   });
 
   it("lets a fully verified teacher in", async () => {
-    const deps = buildDeps({ t: { role: "teacher", aal: "aal2" } }, null, { studentCounts: async () => ({}), studentAccounts: async () => ({}) });
+    const deps = buildDeps({ t: { role: "teacher", aal: "aal2" } }, { studentCounts: async () => ({}), studentAccounts: async () => ({}) });
     expect((await get(createApp(deps), "/api/teacher/students", "t")).status).toBe(200);
   });
 });
@@ -79,24 +80,25 @@ describe("family boundaries", () => {
 
   it("only ever asks the store for published notes on the family dashboard", async () => {
     const listNotes = vi.fn(async () => []);
-    await get(createApp(buildDeps({ parent }, null, { listNotes })), "/api/portal/dashboard", "parent");
+    await get(createApp(buildDeps({ parent }, { listNotes })), "/api/portal/dashboard", "parent");
     expect(listNotes).toHaveBeenCalledWith(STUDENT_A, { publishedOnly: true });
   });
 
-  it("never sends GoHighLevel contact IDs to the browser", async () => {
+  it("never sends internal contact, payer or teacher ids on the student record", async () => {
     const res = await get(createApp(buildDeps({ parent })), "/api/portal/dashboard", "parent");
-    expect(JSON.stringify(res.body)).not.toMatch(/contactA|payerA|ghlContactId|billingContactId/);
+    expect(JSON.stringify(res.body.student)).not.toMatch(/ghlContactId|billingContactId|teacherAccountId|payerId/);
+    expect(JSON.stringify(res.body.students)).not.toContain(PAYER_A);
   });
 
   it("reports unreadable billing as null, never as a zero balance", async () => {
-    const res = await get(createApp(buildDeps({ parent }, null)), "/api/portal/dashboard", "parent");
+    const res = await get(createApp(buildDeps({ parent }, { listInvoices: async () => { throw new Error("db down"); } })), "/api/portal/dashboard", "parent");
     expect(res.status).toBe(200);
     expect(res.body.billing).toBeNull();
   });
 
   it("keeps a teacher preview read-only and audits it", async () => {
     const audit = vi.fn(async () => undefined);
-    const app = createApp(buildDeps({ t: { role: "teacher", aal: "aal2" } }, null, { audit }));
+    const app = createApp(buildDeps({ t: { role: "teacher", aal: "aal2" } }, { audit }));
     const res = await get(app, `/api/portal/dashboard?studentId=${STUDENT_A}`, "t");
     expect(res.body.readOnly).toBe(true);
     expect(res.body.canBook).toBe(false);
@@ -110,9 +112,11 @@ describe("financial features stay off", () => {
     expect(res.status).toBe(501);
   });
 
-  it("the portal can't mark an invoice paid", async () => {
-    const res = await request(createApp(buildDeps({ t: { role: "teacher", aal: "aal2" } }))).post("/api/teacher/invoices/x/mark-paid").set("Authorization", "Bearer t");
-    expect(res.status).toBe(501);
+  it("a family can't mark an invoice paid, and the teacher route rejects a bad id", async () => {
+    const family = await request(createApp(buildDeps({ parent }))).post("/api/teacher/invoices/x/mark-paid").set("Authorization", "Bearer parent");
+    expect(family.status).toBe(403);
+    const bad = await request(createApp(buildDeps({ t: { role: "teacher", aal: "aal2" } }))).post("/api/teacher/invoices/x/mark-paid").set("Authorization", "Bearer t");
+    expect(bad.status).toBe(400);
   });
 });
 
@@ -120,18 +124,18 @@ describe("invitations", () => {
   const invite = { id: "i", tokenHash: "h", method: "code", email: "n@example.com", name: "N", role: "guardian", studentIds: [STUDENT_A], status: "pending", expiresAt: new Date(Date.now() + 864e5).toISOString(), preview: {} };
 
   it("has no open registration: a bad code gets nothing", async () => {
-    const deps = buildDeps({}, null, { findInvitationByHash: async () => null });
+    const deps = buildDeps({}, { findInvitationByHash: async () => null });
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: "SFTM-AAAA-BBBB", password: "a-long-enough-password" });
     expect(res.status).toBe(404);
   });
 
   it("refuses an expired invitation", async () => {
-    const deps = buildDeps({}, null, { findInvitationByHash: async () => ({ ...invite, expiresAt: new Date(0).toISOString() }) as any });
+    const deps = buildDeps({}, { findInvitationByHash: async () => ({ ...invite, expiresAt: new Date(0).toISOString() }) as any });
     expect((await request(createApp(deps)).post("/api/invitations/verify").send({ credential: "SFTM-AAAA-BBBB" })).status).toBe(410);
   });
 
   it("only lets one redemption win", async () => {
-    const deps = buildDeps({}, null, { findInvitationByHash: async () => invite as any, claimInvitation: async () => false });
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite as any, claimInvitation: async () => false });
     const createUser = vi.fn();
     (deps.auth as any).createUser = createUser;
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: "SFTM-AAAA-BBBB", password: "a-long-enough-password" });
@@ -145,7 +149,7 @@ describe("invitations", () => {
   });
 
   it("rate limits code guessing", async () => {
-    const app = createApp(buildDeps({}, null, { findInvitationByHash: async () => null }));
+    const app = createApp(buildDeps({}, { findInvitationByHash: async () => null }));
     let last = 0;
     for (let i = 0; i < 12; i++) last = (await request(app).post("/api/invitations/verify").send({ credential: "SFTM-AAAA-BBBB" })).status;
     expect(last).toBe(429);
@@ -166,7 +170,7 @@ describe("request hygiene", () => {
   });
 
   it("doesn't leak internal errors", async () => {
-    const deps = buildDeps({ parent }, null, { getStudents: async () => { throw new Error("secret db detail"); } });
+    const deps = buildDeps({ parent }, { getStudents: async () => { throw new Error("secret db detail"); } });
     const res = await get(createApp(deps), "/api/portal/dashboard", "parent");
     expect(res.status).toBe(500);
     expect(JSON.stringify(res.body)).not.toContain("secret");
@@ -182,7 +186,7 @@ describe("request hygiene", () => {
   });
 });
 
-describe("webhook signatures", () => {
+describe("legacy webhook signatures (migration only)", () => {
   const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048 });
   const pem = publicKey.export({ type: "spki", format: "pem" }).toString();
   const body = Buffer.from('{"type":"InvoicePaid"}');
@@ -195,9 +199,9 @@ describe("webhook signatures", () => {
     expect(verifyWebhookSignature(body, sig, null)).toBe(false);
   });
 
-  it("the route refuses unsigned events", async () => {
+  it("the portal no longer serves the GoHighLevel webhook route", async () => {
     const res = await request(createApp(buildDeps({}))).post("/api/webhooks/ghl").send({ type: "InvoicePaid" });
-    expect(res.status).toBe(401);
+    expect(res.status).toBe(404);
   });
 });
 
@@ -222,7 +226,7 @@ describe("account creation and roles", () => {
 
   it("takes the role from the invitation, ignoring anything in the request", async () => {
     const createAccountForInvitation = vi.fn(async () => undefined);
-    const deps = buildDeps({}, null, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, createAccountForInvitation });
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, createAccountForInvitation });
     (deps.auth as any).createUser = async () => "new-user";
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ ...body, role: "teacher", studentIds: [STUDENT_B] });
     expect(res.status).toBe(200);
@@ -232,7 +236,7 @@ describe("account creation and roles", () => {
   it("removes the login and reopens the invitation if account setup fails", async () => {
     const releaseInvitation = vi.fn(async () => undefined);
     const deleteUser = vi.fn(async () => undefined);
-    const deps = buildDeps({}, null, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, releaseInvitation, createAccountForInvitation: async () => { throw new Error("db"); } });
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite as any, claimInvitation: async () => true, releaseInvitation, createAccountForInvitation: async () => { throw new Error("db"); } });
     Object.assign(deps.auth as any, { createUser: async () => "new-user", deleteUser });
     expect((await request(createApp(deps)).post("/api/invitations/redeem").send(body)).status).toBe(500);
     expect(deleteUser).toHaveBeenCalledWith("new-user");

@@ -43,6 +43,8 @@ export interface LessonDTO {
   locationLabel: string;
   locationSub: string;
   isZoom: boolean;
+  /** The lesson this one replaced, when it was rescheduled. */
+  rescheduledFromId?: string | null;
 }
 
 export interface NoteDTO {
@@ -100,11 +102,23 @@ export interface InvoiceDTO {
   amountDue: number;
   amountPaid: number;
   currency: string;
+  /** The payer (billing contact) id in Supabase. Empty when the invoice has no payer on file. */
   contactId: string;
   contactName: string;
+  studentId: string;
   lines: { label: string; amount: number }[];
-  /** https payment link from GoHighLevel. Null when the invoice has none, or when safe mode is on. */
+  /** Always null: the portal does not take payments yet. */
   payUrl: string | null;
+}
+
+export interface PaymentDTO {
+  id: string;
+  invoiceId: string;
+  invoiceNumber: string;
+  amount: number;
+  method: string;
+  status: "pending" | "succeeded" | "failed" | "refunded";
+  paidAt: string;
 }
 
 export interface BillingDTO {
@@ -112,8 +126,9 @@ export interface BillingDTO {
   openInvoices: InvoiceDTO[];
   history: InvoiceDTO[];
   bookingBlocked: boolean;
-  /** False in safe mode, so the portal does not open a live checkout. */
+  /** False while the portal takes no payments, so it never opens a checkout. */
   paymentsOpen: boolean;
+  payments: PaymentDTO[];
 }
 
 export interface DashboardResponse {
@@ -130,7 +145,7 @@ export interface DashboardResponse {
   autopayEnabled: boolean;
   /** null means billing could not be read. The UI must never present that as a zero balance. */
   billing: BillingDTO | null;
-  /** Lessons read from GoHighLevel. false means lesson data is unavailable, not empty. */
+  /** Lessons read from Supabase. false means lesson data is unavailable, not empty. */
   lessonsAvailable: boolean;
   canBook: boolean;
   canPay: boolean;
@@ -188,13 +203,10 @@ export interface TeacherStudentRow extends StudentSummary {
   accountId: string | null;
   portalStatus: "active" | "suspended" | "none";
   transferPending: boolean;
-  ghlContactId: string;
-  billingContactId: string;
 }
 
 export interface IntegrationHealth {
   supabase: boolean;
-  ghl: boolean;
   storage: boolean;
 }
 

@@ -1,3 +1,4 @@
+// LEGACY. GoHighLevel webhook signature check, kept for migration only. No portal route uses it.
 import { createVerify } from "node:crypto";
 
 /** RSA-SHA256 check of a raw webhook body against the configured public key. Any failure is a rejection. */

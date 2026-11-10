@@ -403,14 +403,15 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     hasLessonCal: false, noLessonCal: true, lessonCalUrl: "",
     invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: statusWord[i.status] ?? i.status, on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
     paymentUnavailable: !loading && !billing,
-    paymentHistory: allInvoices.filter((i) => i.status === "paid" || i.amountPaid > 0).map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.amountPaid || i.total), status: statusWord[i.status] ?? i.status })),
+    // Each recorded payment, newest first, from Supabase.
+    paymentHistory: (billing?.payments ?? []).map((p) => ({ id: p.id, number: p.invoiceNumber, date: fmtDay(p.paidAt.slice(0, 10)), amount: money(p.amount), status: "Paid" })),
     referralCode: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "",
     f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),
     openBook, openReschedule: openRescheduleFlow, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
     openAutopay: () => open("autopay"), openRecovery: () => open("recovery"),
     closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
     payUrl: selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? selected.payUrl : "",
-    payNote: !billing ? "" : billing.paymentsOpen === false ? "Payments aren't taken in preview." : (selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? "" : "This invoice doesn't include a payment link yet."),
+    payNote: !billing ? "" : billing.paymentsOpen === false ? "The portal doesn't take payments yet. Please pay Zane directly; your balance updates once it's recorded." : (selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? "" : "This invoice doesn't include a payment link yet."),
     payNow, autopayUrl: "#",
     enableAutopay: (e: any) => {
       e?.preventDefault?.();

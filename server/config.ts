@@ -1,4 +1,5 @@
-// Reads server configuration. Anything missing leaves that integration "not configured", and the routes
+// Reads server configuration. GoHighLevel is not read here: the portal runs on Supabase alone.
+// Anything missing leaves that integration "not configured", and the routes
 // depending on it fail with 503. Nothing falls back to simulated data.
 import { featuresForEnv } from "./features.js";
 import { stripeKeysFromEnv } from "./integrations/stripeSetup.js";
@@ -8,17 +9,7 @@ import { supabaseKeyKind } from "../shared/supabase-keys.js";
 export interface ServerConfig {
   appUrl: string;
   supabase: { url: string; serviceRoleKey: string } | null;
-  ghl: {
-    token: string;
-    locationId: string;
-    lessonCalendarId: string;
-    timezone: string;
-    invoiceSenderUserId: string | null;
-    /** When true, contact creates are marked do-not-disturb and no invoice or booking notification is sent. */
-    safeMode: boolean;
-  } | null;
-  ghlWebhookPublicKey: string | null;
-  /** Same switch as GoHighLevel safe mode. It does not suppress Supabase auth mail. */
+  /** Preview safe mode: preview-only features log instead of sending or charging. It does not suppress Supabase auth mail. */
   safeMode: boolean;
   /** Used only while safe mode is on. Portal invitation email is limited to these addresses. */
   safeModeEmailAllowlist: string[];
@@ -37,11 +28,11 @@ export interface ServerConfig {
 }
 
 /**
- * Safe mode is on unless this process is a production deployment, or GHL_SAFE_MODE says otherwise.
+ * Safe mode is on unless this process is a production deployment, or SAFE_MODE says otherwise.
  * Vercel Preview runs with NODE_ENV=production, so the Vercel environment is what decides, not NODE_ENV alone.
  */
-export function ghlSafeMode(env: Record<string, string | undefined>): boolean {
-  const raw = env.GHL_SAFE_MODE?.trim().toLowerCase();
+export function previewSafeMode(env: Record<string, string | undefined>): boolean {
+  const raw = env.SAFE_MODE?.trim().toLowerCase();
   if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
   if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
   if (env.VERCEL_ENV) return env.VERCEL_ENV !== "production";
@@ -61,27 +52,12 @@ export function safeInviteAllowlist(env: Record<string, string | undefined>): st
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
   const supabaseUrl = env.SUPABASE_URL;
   const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
-  const ghlToken = env.GHL_PRIVATE_INTEGRATION_TOKEN;
-  const locationId = env.GHL_LOCATION_ID;
-  const calendarId = env.GHL_LESSON_CALENDAR_ID;
   // A public key here would make every store call fail on RLS, so treat it as not configured.
   const usableServerKey = !!serviceRoleKey && supabaseKeyKind(serviceRoleKey) !== "public";
-  const safeMode = ghlSafeMode(env);
+  const safeMode = previewSafeMode(env);
   return {
     appUrl: env.APP_URL || "http://localhost:3000",
     supabase: supabaseUrl && usableServerKey ? { url: supabaseUrl, serviceRoleKey: serviceRoleKey! } : null,
-    ghl:
-      ghlToken && locationId && calendarId
-        ? {
-            token: ghlToken,
-            locationId,
-            lessonCalendarId: calendarId,
-            timezone: env.GHL_TIMEZONE || "America/Los_Angeles",
-            invoiceSenderUserId: env.GHL_INVOICE_SENDER_USER_ID || null,
-            safeMode,
-          }
-        : null,
-    ghlWebhookPublicKey: env.GHL_WEBHOOK_PUBLIC_KEY || null,
     safeMode,
     safeModeEmailAllowlist: safeInviteAllowlist(env),
     videoBucket: env.SUPABASE_VIDEO_BUCKET || "lesson-videos",

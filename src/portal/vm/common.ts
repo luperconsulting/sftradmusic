@@ -48,3 +48,16 @@ export const copy = (text: string) => {
   }
 };
 export const initialsOf = (name: string) => name.split(/\s+/).filter(Boolean).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+
+/** A wall-clock date and time in the studio's time zone, as an ISO instant. */
+export function wallTimeToIso(date: string, time: string, tz = TZ) {
+  const guess = new Date(`${date}T${time}:00Z`).getTime();
+  const fmtParts = new Intl.DateTimeFormat("en-US", { timeZone: tz, hourCycle: "h23", year: "numeric", month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  const offset = (t: number) => {
+    const parts = fmtParts.formatToParts(new Date(t));
+    const g = (k: string) => Number(parts.find((p) => p.type === k)?.value ?? 0);
+    return Date.UTC(g("year"), g("month") - 1, g("day"), g("hour"), g("minute"), g("second")) - t;
+  };
+  const first = guess - offset(guess);
+  return new Date(guess - offset(first)).toISOString();
+}

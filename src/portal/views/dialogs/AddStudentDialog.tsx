@@ -17,38 +17,9 @@ export default function AddStudentDialog({ v }: { v: VM }) {
       </>
     );
   }
-  const picker = (
-    <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
-      <span style={cap}>{s.pickingBilling ? "Billing contact" : "GoHighLevel contact"}</span>
-      <div style={{ display: "flex", gap: "8px" }}>
-        <input className="dc-f6" aria-label="Search GoHighLevel contacts" value={s.query} onChange={s.setQuery} onKeyDown={s.queryKey} placeholder="Search by name or email" style={input} />
-        <button className="dc-h1" onClick={s.search} style={{ background: "transparent", border: "1px solid rgba(17,22,27,.15)", color: "#1D2A44", borderRadius: "2px", padding: "0 14px", fontSize: "12px", fontWeight: "600", cursor: "pointer" }}>Search</button>
-      </div>
-      {s.searching && <span role="status" style={{ fontSize: "12px", color: "rgba(17,22,27,.55)" }}>Searching…</span>}
-      {s.searchError && <span role="alert" style={{ fontSize: "12px", color: "#9C5F22" }}>{s.searchError}</span>}
-      {s.noResults && <span style={{ fontSize: "12px", color: "rgba(17,22,27,.55)" }}>No matching contacts in GoHighLevel.</span>}
-      {s.results.length > 0 && (
-        <div style={{ border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", maxHeight: "200px", overflowY: "auto" }}>
-          {s.results.map((c: any) => (
-            <button key={c.id} onClick={c.pick} disabled={c.disabled} style={{ display: "block", width: "100%", textAlign: "left", background: "#fff", border: "0", borderBottom: "1px solid rgba(17,22,27,.06)", padding: "10px 12px", cursor: c.disabled ? "default" : "pointer", opacity: c.disabled ? ".55" : "1" }}>
-              <span style={{ display: "block", fontSize: "14px", color: "#11161B" }}>{c.name}</span>
-              <span style={{ display: "block", fontSize: "12px", color: "rgba(17,22,27,.55)" }}>{c.meta}</span>
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
   return (
     <>
-      {s.showContactPicker && picker}
-      {s.contact && !s.pickingBilling && (
-        <div style={{ display: "flex", flexDirection: "column", gap: "4px", background: "rgba(29,42,68,.04)", padding: "12px 14px", borderRadius: "2px" }}>
-          <span style={{ fontSize: "13px", color: "#11161B" }}>Linked contact: <strong>{s.contact.name}</strong> <button onClick={s.changeContact} style={link}>Change</button></span>
-          <span style={{ fontSize: "13px", color: "#11161B" }}>Invoices billed to: <strong>{s.billing.name}</strong> <button onClick={s.changeBilling} style={link}>Change</button></span>
-        </div>
-      )}
-      {s.showFields && (
+      {(
         <>
           <label style={label}><span style={cap}>Student's full name</span><input className="dc-f6" value={s.form.fullName ?? ""} onChange={s.set("fullName")} style={input} /></label>
           <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
