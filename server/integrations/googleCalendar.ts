@@ -1,15 +1,19 @@
-// Google Calendar free/busy, read with a service account the calendar is shared with ("See only free/busy").
-// The key never leaves the server, and only busy intervals come back: no event titles or details.
-import { createSign } from "node:crypto";
+// Google Calendar free/busy, read as a service account the calendar is shared with ("See only free/busy").
+// There is no key: on Vercel, the function's OIDC token is exchanged through Workload Identity Federation
+// for a short-lived Google access token that impersonates the service account. Nothing reaches the browser,
+// and only busy intervals come back: no event titles or details.
+import { getVercelOidcToken } from "@vercel/oidc";
+import { IdentityPoolClient, type IdentityPoolClientOptions } from "google-auth-library";
 import { ApiError } from "../http.js";
 
-const TOKEN_URL = "https://oauth2.googleapis.com/token";
 const FREEBUSY_URL = "https://www.googleapis.com/calendar/v3/freeBusy";
-const SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
+export const FREEBUSY_SCOPE = "https://www.googleapis.com/auth/calendar.freebusy";
 
 export interface GoogleCalendarConfig {
-  clientEmail: string;
-  privateKey: string;
+  projectNumber: string;
+  poolId: string;
+  providerId: string;
+  serviceAccountEmail: string;
   calendarIds: string[];
 }
 
@@ -23,39 +27,53 @@ export interface GoogleBusyClient {
   busy(fromMs: number, toMs: number): Promise<BusyInterval[]>;
 }
 
+/** Returns a Google access token for the service account. Implementations cache it. */
+export type GoogleTokenSource = () => Promise<string>;
+
 export const availabilityUnavailable = () =>
   new ApiError(503, "availability_unavailable", "Open times can't be checked right now. Please try again shortly.");
 
-const b64url = (s: string | Buffer) => Buffer.from(s).toString("base64url");
+/** Options for exchanging a Vercel OIDC token for a Google access token as the service account. */
+export function workloadIdentityOptions(config: GoogleCalendarConfig, oidcToken: () => Promise<string> = () => getVercelOidcToken()): IdentityPoolClientOptions {
+  return {
+    type: "external_account",
+    audience: `//iam.googleapis.com/projects/${config.projectNumber}/locations/global/workloadIdentityPools/${config.poolId}/providers/${config.providerId}`,
+    subject_token_type: "urn:ietf:params:oauth:token-type:jwt",
+    token_url: "https://sts.googleapis.com/v1/token",
+    service_account_impersonation_url: `https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/${encodeURIComponent(config.serviceAccountEmail)}:generateAccessToken`,
+    scopes: [FREEBUSY_SCOPE],
+    subject_token_supplier: { getSubjectToken: () => oidcToken() },
+  };
+}
 
-export function createGoogleCalendar(config: GoogleCalendarConfig, fetchImpl: typeof fetch = fetch, now: () => number = Date.now): GoogleBusyClient {
-  let cached: { token: string; expiresAt: number } | null = null;
+export function workloadIdentityTokenSource(config: GoogleCalendarConfig, oidcToken?: () => Promise<string>): GoogleTokenSource {
+  // The client caches the access token and refreshes it shortly before it expires.
+  const client = new IdentityPoolClient(workloadIdentityOptions(config, oidcToken));
+  return async () => {
+    const { token } = await client.getAccessToken();
+    if (!token) throw new Error("google access token missing");
+    return token;
+  };
+}
 
-  async function accessToken() {
-    if (cached && cached.expiresAt - 60_000 > now()) return cached.token;
-    const iat = Math.floor(now() / 1000);
-    const header = b64url(JSON.stringify({ alg: "RS256", typ: "JWT" }));
-    const claims = b64url(JSON.stringify({ iss: config.clientEmail, scope: SCOPE, aud: TOKEN_URL, iat, exp: iat + 3600 }));
-    const signature = createSign("RSA-SHA256").update(`${header}.${claims}`).sign(config.privateKey).toString("base64url");
-    const res = await fetchImpl(TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: new URLSearchParams({ grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer", assertion: `${header}.${claims}.${signature}` }),
-      signal: AbortSignal.timeout(8000),
-    });
-    if (!res.ok) throw new Error(`google token ${res.status}`);
-    const data = (await res.json()) as { access_token?: string; expires_in?: number };
-    if (!data.access_token) throw new Error("google token missing");
-    cached = { token: data.access_token, expiresAt: now() + (data.expires_in ?? 3600) * 1000 };
-    return cached.token;
-  }
+/** A short reason for the server log. It never includes tokens, response bodies or request details. */
+export function failureReason(e: unknown): string {
+  if (!(e instanceof Error)) return "unknown";
+  if (e.name === "AccessTokenMissingError" || e.name === "RefreshAccessTokenFailedError") return "vercel oidc token unavailable";
+  const status = (e as { status?: unknown; response?: { status?: unknown } }).response?.status ?? (e as { status?: unknown }).status;
+  if (typeof status === "number") return `google auth ${status}`;
+  // Messages this module throws itself are fixed strings; anything else is reduced to its type.
+  return e.message.startsWith("google ") ? e.message : e.name || "error";
+}
 
+export function createGoogleCalendar(config: GoogleCalendarConfig, tokenSource: GoogleTokenSource = workloadIdentityTokenSource(config), fetchImpl: typeof fetch = fetch): GoogleBusyClient {
   return {
     async busy(fromMs, toMs) {
       try {
+        const token = await tokenSource();
         const res = await fetchImpl(FREEBUSY_URL, {
           method: "POST",
-          headers: { Authorization: `Bearer ${await accessToken()}`, "Content-Type": "application/json" },
+          headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
           body: JSON.stringify({ timeMin: new Date(fromMs).toISOString(), timeMax: new Date(toMs).toISOString(), items: config.calendarIds.map((id) => ({ id })) }),
           signal: AbortSignal.timeout(8000),
         });
@@ -76,7 +94,7 @@ export function createGoogleCalendar(config: GoogleCalendarConfig, fetchImpl: ty
         return out;
       } catch (e) {
         // The reason goes to the server log only; the visitor gets the safe message.
-        console.error(`[google] free/busy failed: ${e instanceof Error ? e.message : "unknown"}`);
+        console.error(`[google] free/busy failed: ${failureReason(e)}`);
         throw availabilityUnavailable();
       }
     },

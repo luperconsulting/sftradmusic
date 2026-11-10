@@ -27,8 +27,8 @@ export interface ServerConfig {
   smtp: { user: string; pass: string } | null;
   /** Present only for sk_test_ and pk_test_ keys. Live keys are ignored so safe mode cannot charge. */
   stripe: { secretKey: string; publishableKey: string } | null;
-  /** Google Calendar free/busy for the public booking widget. Null until all three settings are present. */
-  google?: { clientEmail: string; privateKey: string; calendarIds: string[] } | null;
+  /** Google Calendar free/busy for the public booking widget, via Workload Identity Federation. Null until every setting is present. */
+  google?: { projectNumber: string; poolId: string; providerId: string; serviceAccountEmail: string; calendarIds: string[] } | null;
   /** The public booking widget: which GoHighLevel calendar's rules give the base times, and the slot length. */
   booking?: { ghlCalendarId: string; slotMinutes: number };
   features: {
@@ -103,9 +103,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 }
 
 export function googleFromEnv(env: Record<string, string | undefined>) {
-  const clientEmail = env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim();
-  // Env vars usually carry the PEM key with escaped newlines.
-  const privateKey = env.GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY?.replace(/\\n/g, "\n").trim();
+  const projectNumber = env.GCP_PROJECT_NUMBER?.trim();
+  const poolId = env.GCP_WORKLOAD_IDENTITY_POOL_ID?.trim();
+  const providerId = env.GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID?.trim();
+  const serviceAccountEmail = env.GOOGLE_SERVICE_ACCOUNT_EMAIL?.trim();
   const calendarIds = (env.GOOGLE_CALENDAR_IDS ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-  return clientEmail && privateKey && calendarIds.length ? { clientEmail, privateKey, calendarIds } : null;
+  return projectNumber && poolId && providerId && serviceAccountEmail && calendarIds.length
+    ? { projectNumber, poolId, providerId, serviceAccountEmail, calendarIds }
+    : null;
 }

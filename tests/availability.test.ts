@@ -1,9 +1,8 @@
-import { generateKeyPairSync, createVerify } from "node:crypto";
 import request from "supertest";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createApp } from "../server/app";
 import { googleFromEnv } from "../server/config";
-import { createGoogleCalendar } from "../server/integrations/googleCalendar";
+import { createGoogleCalendar, failureReason, FREEBUSY_SCOPE, workloadIdentityOptions, workloadIdentityTokenSource } from "../server/integrations/googleCalendar";
 import { bookingDate, openTimes, startOfBookingDate } from "../server/services/availability";
 import { buildDeps, fakeGhl } from "./helpers";
 
@@ -111,51 +110,95 @@ describe("GET /api/booking/availability", () => {
 });
 
 describe("Google Calendar client", () => {
-  const { privateKey, publicKey } = generateKeyPairSync("rsa", { modulusLength: 2048, privateKeyEncoding: { type: "pkcs8", format: "pem" }, publicKeyEncoding: { type: "spki", format: "pem" } });
-  const cfg = { clientEmail: "booking@example.iam.gserviceaccount.com", privateKey, calendarIds: ["primary-cal", "studio-cal"] };
+  const cfg = { projectNumber: "123456789", poolId: "vercel", providerId: "vercel-oidc", serviceAccountEmail: "booking@example.iam.gserviceaccount.com", calendarIds: ["primary-cal", "studio-cal"] };
   const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json" } });
+  const freeBusyFetch = (body: unknown, status = 200) => vi.fn(async (_url: any, _init: any) => json(body, status));
+  const token = async () => "access";
 
-  function fakeFetch(freeBusy: unknown, freeBusyStatus = 200) {
-    return vi.fn(async (url: any, init: any) => {
-      if (String(url).includes("oauth2")) return json({ access_token: "access", expires_in: 3600 });
-      return json(freeBusy, freeBusyStatus);
-    });
-  }
+  afterEach(() => { vi.unstubAllGlobals(); vi.restoreAllMocks(); });
 
-  it("signs a free/busy-only token request and merges busy times from every calendar", async () => {
-    const f = fakeFetch({ calendars: { "primary-cal": { busy: [{ start: "2026-11-10T18:00:00Z", end: "2026-11-10T19:00:00Z" }] }, "studio-cal": { busy: [] } } });
-    const busy = await createGoogleCalendar(cfg, f as any).busy(0, 1);
+  it("asks only for busy times with the federated token and merges every calendar", async () => {
+    const f = freeBusyFetch({ calendars: { "primary-cal": { busy: [{ start: "2026-11-10T18:00:00Z", end: "2026-11-10T19:00:00Z" }] }, "studio-cal": { busy: [] } } });
+    const busy = await createGoogleCalendar(cfg, token, f as any).busy(0, 1);
     expect(busy).toEqual([{ start: Date.parse("2026-11-10T18:00:00Z"), end: Date.parse("2026-11-10T19:00:00Z") }]);
-    const assertion = new URLSearchParams((f.mock.calls[0] as any)[1].body.toString()).get("assertion")!;
-    const [h, c, s] = assertion.split(".");
-    expect(JSON.parse(Buffer.from(c, "base64url").toString()).scope).toBe("https://www.googleapis.com/auth/calendar.freebusy");
-    expect(createVerify("RSA-SHA256").update(`${h}.${c}`).verify(publicKey, Buffer.from(s, "base64url"))).toBe(true);
-    const sent = JSON.parse((f.mock.calls[1] as any)[1].body);
-    expect(sent.items).toEqual([{ id: "primary-cal" }, { id: "studio-cal" }]);
+    const [url, init] = f.mock.calls[0] as any;
+    expect(url).toBe("https://www.googleapis.com/calendar/v3/freeBusy");
+    expect(init.headers.Authorization).toBe("Bearer access");
+    expect(JSON.parse(init.body).items).toEqual([{ id: "primary-cal" }, { id: "studio-cal" }]);
   });
 
-  it("reuses the access token until it nears expiry", async () => {
-    const f = fakeFetch({ calendars: { "primary-cal": { busy: [] }, "studio-cal": { busy: [] } } });
-    const client = createGoogleCalendar(cfg, f as any);
-    await client.busy(0, 1);
-    await client.busy(0, 1);
-    expect(f.mock.calls.filter((c: any) => String(c[0]).includes("oauth2"))).toHaveLength(1);
+  it("builds the Workload Identity Federation exchange for the pool, provider and service account, free/busy scope only", async () => {
+    const opts = workloadIdentityOptions(cfg, async () => "vercel-oidc-token");
+    expect(opts.audience).toBe("//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/vercel/providers/vercel-oidc");
+    expect(opts.subject_token_type).toBe("urn:ietf:params:oauth:token-type:jwt");
+    expect(opts.token_url).toBe("https://sts.googleapis.com/v1/token");
+    expect(opts.service_account_impersonation_url).toBe("https://iamcredentials.googleapis.com/v1/projects/-/serviceAccounts/booking%40example.iam.gserviceaccount.com:generateAccessToken");
+    expect(opts.scopes).toEqual([FREEBUSY_SCOPE]);
+    expect(FREEBUSY_SCOPE).toBe("https://www.googleapis.com/auth/calendar.freebusy");
+    expect(await opts.subject_token_supplier!.getSubjectToken({} as any)).toBe("vercel-oidc-token");
+  });
+
+  it("exchanges the Vercel OIDC token at Google STS, impersonates the service account, and reuses the token", async () => {
+    const calls: { url: string; body: string }[] = [];
+    const fakeGoogle = vi.fn(async (input: any, init: any = {}) => {
+      const url = typeof input === "string" ? input : input.url ?? String(input);
+      const body = init.body == null ? "" : typeof init.body === "string" ? init.body : init.body.toString();
+      calls.push({ url, body });
+      if (url.startsWith("https://sts.googleapis.com")) return json({ access_token: "federated", issued_token_type: "urn:ietf:params:oauth:token-type:access_token", token_type: "Bearer", expires_in: 3600 });
+      if (url.startsWith("https://iamcredentials.googleapis.com")) return json({ accessToken: "impersonated", expireTime: new Date(Date.now() + 3600_000).toISOString() });
+      return json({}, 404);
+    });
+    // google-auth-library's STS step always makes its own HTTP client, which takes window.fetch when there is one
+    // (and caches it for this test file). Giving it this fake keeps the test offline.
+    vi.stubGlobal("window", { fetch: fakeGoogle });
+    const source = workloadIdentityTokenSource(cfg, async () => "vercel-oidc-token");
+    expect(await source()).toBe("impersonated");
+    expect(await source()).toBe("impersonated");
+    const sts = calls.filter((c) => c.url.startsWith("https://sts.googleapis.com"));
+    expect(sts).toHaveLength(1);
+    const form = new URLSearchParams(sts[0].body);
+    expect(form.get("subject_token")).toBe("vercel-oidc-token");
+    expect(form.get("audience")).toBe("//iam.googleapis.com/projects/123456789/locations/global/workloadIdentityPools/vercel/providers/vercel-oidc");
+    const iam = calls.filter((c) => c.url.startsWith("https://iamcredentials.googleapis.com"));
+    expect(iam).toHaveLength(1);
+    expect(iam[0].url).toContain("booking%40example.iam.gserviceaccount.com:generateAccessToken");
+    expect(JSON.parse(iam[0].body).scope).toEqual([FREEBUSY_SCOPE]);
+  });
+
+  it("fails safely, logging only a short reason, when the token exchange is refused or the OIDC token is missing", async () => {
+    const log = vi.spyOn(console, "error").mockImplementation(() => {});
+    const refused = Object.assign(new Error("Request failed: subject_token=vercel-oidc-token secret detail"), { response: { status: 403 } });
+    await expect(createGoogleCalendar(cfg, async () => { throw refused; }, freeBusyFetch({}) as any).busy(0, 1)).rejects.toMatchObject({ status: 503, code: "availability_unavailable" });
+    const missing = Object.assign(new Error("The 'x-vercel-oidc-token' header is missing"), { name: "AccessTokenMissingError" });
+    await expect(createGoogleCalendar(cfg, async () => { throw missing; }, freeBusyFetch({}) as any).busy(0, 1)).rejects.toMatchObject({ code: "availability_unavailable" });
+    const logged = log.mock.calls.map((c) => String(c[0]));
+    expect(logged).toEqual(["[google] free/busy failed: google auth 403", "[google] free/busy failed: vercel oidc token unavailable"]);
+    expect(logged.join(" ")).not.toMatch(/vercel-oidc-token|secret|subject_token/);
+  });
+
+  it("never logs an unexpected error's message", () => {
+    expect(failureReason(new TypeError("token abc.def.ghi leaked"))).toBe("TypeError");
+    expect(failureReason("nope")).toBe("unknown");
   });
 
   it("fails safely when a calendar can't be read, rather than treating it as free", async () => {
-    const f = fakeFetch({ calendars: { "primary-cal": { busy: [] }, "studio-cal": { errors: [{ domain: "global", reason: "notFound" }], busy: [] } } });
-    await expect(createGoogleCalendar(cfg, f as any).busy(0, 1)).rejects.toMatchObject({ status: 503, code: "availability_unavailable" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    const f = freeBusyFetch({ calendars: { "primary-cal": { busy: [] }, "studio-cal": { errors: [{ domain: "global", reason: "notFound" }], busy: [] } } });
+    await expect(createGoogleCalendar(cfg, token, f as any).busy(0, 1)).rejects.toMatchObject({ status: 503, code: "availability_unavailable" });
   });
 
   it("fails safely on an HTTP error or a network failure", async () => {
-    await expect(createGoogleCalendar(cfg, fakeFetch({}, 500) as any).busy(0, 1)).rejects.toMatchObject({ code: "availability_unavailable" });
+    vi.spyOn(console, "error").mockImplementation(() => {});
+    await expect(createGoogleCalendar(cfg, token, freeBusyFetch({}, 500) as any).busy(0, 1)).rejects.toMatchObject({ code: "availability_unavailable" });
     const offline = vi.fn(async () => { throw new TypeError("fetch failed"); });
-    await expect(createGoogleCalendar(cfg, offline as any).busy(0, 1)).rejects.toMatchObject({ code: "availability_unavailable" });
+    await expect(createGoogleCalendar(cfg, token, offline as any).busy(0, 1)).rejects.toMatchObject({ code: "availability_unavailable" });
   });
 
-  it("reads settings from the environment, with escaped newlines in the key", () => {
+  it("reads the federation settings from the environment and needs all of them; no private key is read", () => {
+    const env = { GCP_PROJECT_NUMBER: " 123456789 ", GCP_WORKLOAD_IDENTITY_POOL_ID: "vercel", GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID: "vercel-oidc", GOOGLE_SERVICE_ACCOUNT_EMAIL: "booking@example.iam.gserviceaccount.com", GOOGLE_CALENDAR_IDS: "primary-cal, studio-cal" };
+    expect(googleFromEnv(env)).toEqual(cfg);
     expect(googleFromEnv({})).toBeNull();
-    const g = googleFromEnv({ GOOGLE_SERVICE_ACCOUNT_EMAIL: "a@b", GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: "-----BEGIN\\nKEY\\n-----END", GOOGLE_CALENDAR_IDS: "one, two" });
-    expect(g).toEqual({ clientEmail: "a@b", privateKey: "-----BEGIN\nKEY\n-----END", calendarIds: ["one", "two"] });
+    for (const k of Object.keys(env)) expect(googleFromEnv({ ...env, [k]: "" })).toBeNull();
+    expect(googleFromEnv({ ...env, GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY: "ignored" })).toEqual(cfg);
   });
 });

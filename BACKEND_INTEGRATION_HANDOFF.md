@@ -162,7 +162,7 @@ Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both cre
 - **Failures:** if Google or GoHighLevel can't be read, or Google can't read one of the calendars, the endpoint returns `503 availability_unavailable` and the widget shows "Open times can't be checked right now" with no times. It never falls back to unchecked availability.
 - **Credentials** stay on the server. The browser only receives the times.
 
-**Setup:** see `.env.example` for `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` and `GOOGLE_CALENDAR_IDS`. Until they're set, `/book` shows the safe error, so don't merge this to production before Google is configured and booking (phase 2) is decided: the old GoHighLevel iframe is no longer on the page.
+**Setup:** Google is reached keylessly through Workload Identity Federation with Vercel OIDC; see "Google Calendar setup" in README.md and `.env.example` for `GCP_PROJECT_NUMBER`, `GCP_WORKLOAD_IDENTITY_POOL_ID`, `GCP_WORKLOAD_IDENTITY_POOL_PROVIDER_ID`, `GOOGLE_SERVICE_ACCOUNT_EMAIL` and `GOOGLE_CALENDAR_IDS`. Until they're set, `/book` shows the safe error, so don't merge this to production before Google is configured and booking (phase 2) is decided: the old GoHighLevel iframe is no longer on the page.
 
 ## 3. Payments
 
