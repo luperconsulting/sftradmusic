@@ -1,3 +1,5 @@
+import { availabilityUnavailable, createGoogleCalendar, type GoogleBusyClient } from "./integrations/googleCalendar.js";
+import { BOOKING_TIMEZONE, openTimes, startOfBookingDate } from "./services/availability.js";
 import { parseNewStudent, resolveStudentContacts, enrollInvitedStudent } from "./services/students.js";
 import { studentFormMessages } from "../shared/student-form.js";
 import express, { type Request, type Response, type NextFunction } from "express";
@@ -26,6 +28,8 @@ export interface Deps {
   store: PortalStore | null;
   auth: AuthAdmin | null;
   ghl: GhlClient | null;
+  /** Google Calendar free/busy for the public booking widget. */
+  google?: GoogleBusyClient | null;
   limiter: RateLimiter;
 }
 
@@ -36,6 +40,7 @@ export function defaultDeps(): Deps {
     store: config.supabase ? createSupabaseStore(config.supabase.url, config.supabase.serviceRoleKey, config.videoBucket) : null,
     auth: config.supabase ? createSupabaseAuthAdmin(config.supabase.url, config.supabase.serviceRoleKey, config.appUrl) : null,
     ghl: config.ghl ? createGhlClient(config.ghl) : null,
+    google: config.google ? createGoogleCalendar(config.google) : null,
     limiter: memoryRateLimiter(),
   };
 }
@@ -369,6 +374,28 @@ export function createApp(deps: Deps) {
       canPay: canPayFor(actor, student.id),
     };
     return body;
+  }));
+
+  // ---- public booking widget ------------------------------------------------------------------------------
+  // Open intro-call times: GoHighLevel's calendar rules as the base, minus Google Calendar busy times and
+  // anything already started. If either source can't be read the answer is an error, never a guess.
+  app.get("/api/booking/availability", wrap(async (req) => {
+    limiter.hit(`booking-availability:${clientKey(req)}`, 60, 60000);
+    const q = parse(z.object({ from: dateOnly, to: dateOnly }), req.query);
+    const fromMs = startOfBookingDate(q.from);
+    const toMs = startOfBookingDate(q.to) + 86400000;
+    if (!(toMs > fromMs) || toMs - fromMs > 31 * 86400000) throw new ApiError(400, "invalid_input", "That date range isn't valid.");
+    const booking = config.booking ?? { ghlCalendarId: "vc5JhcEjhKFs3MpJyj9p", slotMinutes: 15 };
+    if (!deps.ghl || !deps.google) throw availabilityUnavailable();
+    const ghl = deps.ghl, google = deps.google;
+    let base: Record<string, string[]>, busy: Awaited<ReturnType<GoogleBusyClient["busy"]>>;
+    try {
+      // Busy times are read one slot-length past the range, so a slot at the end is checked in full.
+      [base, busy] = await Promise.all([ghl.getFreeSlots(fromMs, toMs, booking.ghlCalendarId), google.busy(fromMs, toMs + booking.slotMinutes * 60000)]);
+    } catch {
+      throw availabilityUnavailable();
+    }
+    return { timezone: BOOKING_TIMEZONE, slotMinutes: booking.slotMinutes, days: openTimes({ base, busy, durationMinutes: booking.slotMinutes, now: Date.now() }) };
   }));
 
   app.get("/api/lessons/slots", authenticate(), wrap(async (req) => {

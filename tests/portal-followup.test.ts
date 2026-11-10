@@ -33,6 +33,7 @@ function routesOf(app: Application) {
 
 const PUBLIC = new Set([
   "GET /api/health",
+  "GET /api/booking/availability",
   "POST /api/invitations/verify",
   "POST /api/invitations/redeem",
   "POST /api/invitations/verify-code",

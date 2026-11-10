@@ -35,7 +35,8 @@ export interface GhlAppointment {
 
 export interface GhlClient {
   config: GhlConfig;
-  getFreeSlots(fromMs: number, toMs: number): Promise<Record<string, string[]>>;
+  /** Open slots by date. calendarId defaults to the lesson calendar. */
+  getFreeSlots(fromMs: number, toMs: number, calendarId?: string): Promise<Record<string, string[]>>;
   createAppointment(input: { contactId: string; startTime: string; endTime: string; title: string; address: string }): Promise<GhlAppointment>;
   updateAppointment(eventId: string, input: { startTime: string; endTime: string; address?: string }): Promise<GhlAppointment>;
   getAppointment(eventId: string): Promise<GhlAppointment>;
@@ -108,9 +109,9 @@ export function createGhlClient(config: GhlConfig, fetchImpl: typeof fetch = fet
 
   return {
     config,
-    async getFreeSlots(fromMs, toMs) {
+    async getFreeSlots(fromMs, toMs, calendarId = config.lessonCalendarId) {
       const q = new URLSearchParams({ startDate: String(fromMs), endDate: String(toMs), timezone: config.timezone });
-      const data = await call(`/calendars/${config.lessonCalendarId}/free-slots?${q}`, CALENDAR_VERSION);
+      const data = await call(`/calendars/${encodeURIComponent(calendarId)}/free-slots?${q}`, CALENDAR_VERSION);
       const days: Record<string, string[]> = {};
       for (const [day, value] of Object.entries<any>(data)) {
         if (/^\d{4}-\d{2}-\d{2}$/.test(day) && Array.isArray(value?.slots)) days[day] = value.slots;

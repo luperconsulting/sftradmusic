@@ -151,6 +151,19 @@ Teacher > Students has **Add Student** and **Import from GoHighLevel**. Both cre
 
 **If saving the student row fails after a contact was created:** the route deletes only the contacts that this request created, then writes their ids to `audit_log` as `student.create_failed`. A contact that was only reused (for example Arzo Luper's existing contact) is not deleted. If a delete fails, the id is still in `audit_log` and the server log says the removal failed. A retry reuses a contact that still has that email.
 
+## Public booking widget and Google Calendar (phase 1)
+
+`/book` now shows the approved booking widget instead of the GoHighLevel iframe. It only displays open times: nothing is booked, saved or sent yet, and "Confirm call" says so.
+
+- `GET /api/booking/availability?from=YYYY-MM-DD&to=YYYY-MM-DD` (public, up to 31 days, 60 requests a minute per IP) returns `{ timezone: "America/Los_Angeles", slotMinutes, days: { date: [ISO times] } }`.
+- **Base availability** is GoHighLevel's free slots for the intro-call calendar (`BOOKING_GHL_CALENDAR_ID`, default `vc5JhcEjhKFs3MpJyj9p`), so its open hours, notice, buffers and existing appointments still apply.
+- **Google Calendar** busy times from every calendar in `GOOGLE_CALENDAR_IDS` remove any slot they overlap. A slot is `slotMinutes` long (default 15); an event ending exactly when a slot starts doesn't block it.
+- **Past times** never appear, checked on the server and again in the browser.
+- **Failures:** if Google or GoHighLevel can't be read, or Google can't read one of the calendars, the endpoint returns `503 availability_unavailable` and the widget shows "Open times can't be checked right now" with no times. It never falls back to unchecked availability.
+- **Credentials** stay on the server. The browser only receives the times.
+
+**Setup:** see `.env.example` for `GOOGLE_SERVICE_ACCOUNT_EMAIL`, `GOOGLE_SERVICE_ACCOUNT_PRIVATE_KEY` and `GOOGLE_CALENDAR_IDS`. Until they're set, `/book` shows the safe error, so don't merge this to production before Google is configured and booking (phase 2) is decided: the old GoHighLevel iframe is no longer on the page.
+
 ## 3. Payments
 
 **Pay Now emails the customer their invoice link through GoHighLevel. Invoice notifications from the portal are email-only (owner's decision): the send action is `email`, never `sms` or `sms_and_email`. It has not been run live.**
