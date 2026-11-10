@@ -1,10 +1,10 @@
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { createApp } from "../server/app";
 import { ApiRequestError } from "../src/portal/api/client";
 import { isRecoverySession, readRecoveryLink, saveNewPassword, tokenFromRecovery, waitForRecoverySession } from "../src/portal/auth/recovery";
 import { resolveAuthState } from "../src/portal/auth/session";
-import { markMfaVerified, markPasswordVerified, resetTeacherGate } from "../src/portal/auth/teacherGate";
+import { isEmailOtp } from "../shared/email-otp";
 import { buildDeps } from "./helpers";
 
 // Unsigned stand-ins with the claims that matter. The real tokens are checked by Supabase, not here.
@@ -14,28 +14,33 @@ const recoveryToken = jwt({ aal: "aal1", amr: [{ method: "recovery" }] });
 const teacher = (aal: string) => ({ user: { id: "t", email: "t@example.com", role: "teacher", displayName: "T", mfaEnabled: true, aal } }) as any;
 const mfaRequired = () => new ApiRequestError(403, "mfa_required", "Two-factor verification is required.");
 
-function client(session: { access_token: string } | null, factors = 1) {
+/** A stand-in Supabase client. `level` is what supabase.auth.mfa.getAuthenticatorAssuranceLevel() reports. */
+function client(session: { access_token: string } | null, factors = 1, level?: { currentLevel: string; nextLevel: string }) {
+  const lvl = level ?? { currentLevel: "aal1", nextLevel: factors > 0 ? "aal2" : "aal1" };
   return {
     auth: {
       getSession: vi.fn(async () => ({ data: { session } })),
       signOut: vi.fn(async () => undefined),
-      mfa: { listFactors: async () => ({ data: { totp: Array.from({ length: factors }, (_, i) => ({ id: `f${i}` })) } }) },
+      mfa: {
+        listFactors: async () => ({ data: { totp: Array.from({ length: factors }, (_, i) => ({ id: `f${i}` })) } }),
+        getAuthenticatorAssuranceLevel: vi.fn(async () => ({ data: lvl })),
+      },
     },
   };
 }
 const notRecovery = () => false;
-
-beforeEach(() => resetTeacherGate());
+const aal2 = { currentLevel: "aal2", nextLevel: "aal2" };
+const aal1WithFactor = { currentLevel: "aal1", nextLevel: "aal2" };
 
 describe("teacher sign-in", () => {
-  it("routes the server's AAL1 answer to the two-factor screen, then the portal", async () => {
-    const c = client({ access_token: passwordToken });
-    markPasswordVerified();
+  it("routes an AAL1 session to the two-factor screen, then to the portal once Supabase reports aal2", async () => {
+    const c = client({ access_token: passwordToken }, 1, aal1WithFactor);
     const pending = { mfaRequired: true as const, user: { role: "teacher" as const, mfaEnabled: true, aal: "aal1" } };
     expect(await resolveAuthState(c, async () => pending, notRecovery)).toEqual({ status: "needsMfa", me: null, mfaEnrolled: true });
-    markMfaVerified();
-    expect((await resolveAuthState(c, async () => teacher("aal2"), notRecovery)).status).toBe("ready");
+    const after = client({ access_token: passwordToken }, 1, aal2);
+    expect((await resolveAuthState(after, async () => teacher("aal2"), notRecovery)).status).toBe("ready");
     expect(c.auth.signOut).not.toHaveBeenCalled();
+    expect(after.auth.signOut).not.toHaveBeenCalled();
   });
 
   it("calls only a missing account row 'no account'", async () => {
@@ -45,45 +50,40 @@ describe("teacher sign-in", () => {
     expect(other.status).toBe("unavailable");
   });
 
-  it("goes from password to the two-factor screen, then to the portal", async () => {
-    const c = client({ access_token: passwordToken });
-    markPasswordVerified();
-    const afterPassword = await resolveAuthState(c, async () => { throw mfaRequired(); }, notRecovery);
-    expect(afterPassword).toEqual({ status: "needsMfa", me: null, mfaEnrolled: true });
-    expect(c.auth.signOut).not.toHaveBeenCalled();
-
-    markMfaVerified();
-    const afterCode = await resolveAuthState(c, async () => teacher("aal2"), notRecovery);
-    expect(afterCode.status).toBe("ready");
-    expect(c.auth.signOut).not.toHaveBeenCalled();
-  });
-
   it("sends a password-only account without an authenticator to set one up", async () => {
-    markPasswordVerified();
     const state = await resolveAuthState(client({ access_token: passwordToken }, 0), async () => { throw mfaRequired(); }, notRecovery);
     expect(state).toMatchObject({ status: "needsMfa", mfaEnrolled: false });
+  });
+
+  it("never lets a client-side aal2 claim in when the server's token says aal1", async () => {
+    const c = client({ access_token: passwordToken }, 1, aal2);
+    const pending = { mfaRequired: true as const, user: { role: "teacher" as const, mfaEnabled: true, aal: "aal1" } };
+    expect((await resolveAuthState(c, async () => pending, notRecovery)).status).toBe("needsMfa");
   });
 });
 
 describe("reloading a stored session", () => {
-  it("signs out a restored AAL1 session from the server's routing answer too", async () => {
-    const c = client({ access_token: passwordToken });
-    const pending = { mfaRequired: true as const, user: { role: "guardian" as const, mfaEnabled: true, aal: "aal1" } };
-    expect((await resolveAuthState(c, async () => pending, notRecovery)).status).toBe("signedOut");
-    expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+  it("keeps an aal2 session signed in on reload, a new tab, or reopening the site, with no prompt", async () => {
+    for (const role of ["teacher", "guardian", "student"]) {
+      const c = client({ access_token: jwt({ aal: "aal2" }) }, 1, aal2);
+      const me = { user: { id: "u", email: "luperdev@gmail.com", role, displayName: "Arzo Luper", mfaEnabled: true, aal: "aal2" } } as any;
+      expect(await resolveAuthState(c, async () => me, notRecovery), role).toEqual({ status: "ready", me, mfaEnrolled: true });
+      expect(c.auth.signOut).not.toHaveBeenCalled();
+      expect(c.auth.mfa.getAuthenticatorAssuranceLevel).toHaveBeenCalled();
+    }
   });
 
-  it("signs out a password-only (AAL1) session instead of resuming it", async () => {
-    const c = client({ access_token: passwordToken });
-    const state = await resolveAuthState(c, async () => { throw mfaRequired(); }, notRecovery);
-    expect(state.status).toBe("signedOut");
-    expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+  it("asks an aal1 session for the 2FA code only, without signing it out or asking for the password", async () => {
+    for (const role of ["teacher", "guardian"] as const) {
+      const c = client({ access_token: passwordToken }, 1, aal1WithFactor);
+      const pending = { mfaRequired: true as const, user: { role, mfaEnabled: true, aal: "aal1" } };
+      expect(await resolveAuthState(c, async () => pending, notRecovery), role).toEqual({ status: "needsMfa", me: null, mfaEnrolled: true });
+      expect(c.auth.signOut).not.toHaveBeenCalled();
+    }
   });
 
-  it("still signs out a stored teacher session that had passed 2FA", async () => {
-    const c = client({ access_token: passwordToken });
-    expect((await resolveAuthState(c, async () => teacher("aal2"), notRecovery)).status).toBe("signedOut");
-    expect(c.auth.signOut).toHaveBeenCalledWith({ scope: "local" });
+  it("treats no stored session as signed out", async () => {
+    expect((await resolveAuthState(client(null), vi.fn(), notRecovery)).status).toBe("signedOut");
   });
 
   it("gets no data from the server at AAL1, only the role for routing", async () => {
@@ -164,10 +164,19 @@ describe("password reset link", () => {
     expect((await saveNewPassword({ auth }, { password: "a-new-long-password", code: "123456", needsCode: true })).error).toBeNull();
     expect(order).toEqual(["code", "code", "password", "signOut:global"]);
 
-    // The next page load starts from nothing; the new password alone reaches only the 2FA screen.
-    resetTeacherGate();
-    markPasswordVerified();
-    const next = await resolveAuthState(client({ access_token: passwordToken }), async () => { throw mfaRequired(); }, notRecovery);
+    // Signing in again with the new password reaches only the 2FA screen (the session is aal1).
+    const next = await resolveAuthState(client({ access_token: passwordToken }, 1, aal1WithFactor), async () => { throw mfaRequired(); }, notRecovery);
     expect(next.status).toBe("needsMfa");
+  });
+});
+
+describe("email OTP length", () => {
+  it("accepts 6 to 10 digits, which covers Supabase's configurable OTP", () => {
+    expect(isEmailOtp("482913")).toBe(true);
+    expect(isEmailOtp("48291370")).toBe(true);
+    expect(isEmailOtp("1234567890")).toBe(true);
+    expect(isEmailOtp("12345")).toBe(false);
+    expect(isEmailOtp("12345678901")).toBe(false);
+    expect(isEmailOtp("4829137a")).toBe(false);
   });
 });

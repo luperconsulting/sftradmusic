@@ -4,7 +4,7 @@ import type { InvitationPreview } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { homeFor, useAuth } from "../auth/AuthContext";
 import { INVITE_PATH } from "../auth/routes";
-import { markMfaVerified, markPasswordVerified } from "../auth/teacherGate";
+import { setDemoSignedIn } from "../auth/AuthContext";
 import { isEmailOtp } from "../../../shared/email-otp";
 import { DEMO_MODE, supabase } from "../auth/supabase";
 import { fmt, useToast } from "./common";
@@ -34,8 +34,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
   const signIn = useCallback(async () => {
     if (busy) return;
     if (DEMO_MODE && !supabase) {
-      markPasswordVerified();
-      markMfaVerified();
+      setDemoSignedIn(true);
       setBusy(true);
       await refresh();
       setBusy(false);
@@ -51,7 +50,6 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       // One generic message: never reveal whether an email has an account.
       return setError("That email and password don't match our records. Please check and try again.");
     }
-    markPasswordVerified();
     await refresh();
     setBusy(false);
   }, [busy, email, password, refresh]);
@@ -87,7 +85,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       refs.current[0]?.focus();
       return setError("That code isn't valid or has expired. Codes refresh every 30 seconds.");
     }
-    markMfaVerified();
+    // The session is now aal2 in Supabase, which is what keeps the user signed in across reloads.
     await refresh();
     setBusy(false);
   }, [busy, refresh]);
@@ -127,8 +125,6 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
       }
       setPassword("");
       setConfirm("");
-      // The password was just set in this page, which counts as entering it.
-      markPasswordVerified();
       await refresh();
       navigate("/verify");
     } catch (e) {

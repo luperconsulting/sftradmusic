@@ -3,10 +3,19 @@ import type { MePending, MeResponse } from "../../../shared/portal-types";
 import { api } from "../api/client";
 import { isRecoverySession } from "./recovery";
 import { resolveAuthState, type AuthStatus } from "./session";
-import { teacherPortalReady } from "./teacherGate";
+import { signOutAllBrowsers, signOutThisBrowser } from "./session";
 import { DEMO_MODE, recoverySignals, supabase } from "./supabase";
 
 export type { AuthStatus };
+
+// Dev-only sample mode has no real session; this tab remembers that sign-in was clicked.
+const DEMO_KEY = "portal-demo-signed-in";
+export function demoSignedIn() {
+  try { return sessionStorage.getItem(DEMO_KEY) === "1"; } catch { return false; }
+}
+export function setDemoSignedIn(on: boolean) {
+  try { if (on) sessionStorage.setItem(DEMO_KEY, "1"); else sessionStorage.removeItem(DEMO_KEY); } catch { /* storage blocked */ }
+}
 
 interface AuthValue {
   status: AuthStatus;
@@ -16,6 +25,7 @@ interface AuthValue {
   configured: boolean;
   refresh(): Promise<void>;
   signOut(): Promise<void>;
+  signOutEverywhere(): Promise<void>;
 }
 
 const Ctx = createContext<AuthValue | null>(null);
@@ -30,8 +40,8 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const refresh = useCallback(async () => {
     if (DEMO_MODE) {
-      // Sample data never opens the teacher portal by itself. Sign-in has to be clicked first.
-      if (!teacherPortalReady()) {
+      // Sample data never opens the portal by itself. Sign-in has to be clicked first (kept for this tab).
+      if (!demoSignedIn()) {
         setMe(null);
         setStatus("signedOut");
         return;
@@ -67,12 +77,21 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return () => data.subscription.unsubscribe();
   }, [refresh]);
 
+  // Sign out ends this browser's session only. Other browsers and devices stay signed in.
   const signOut = useCallback(async () => {
-    await supabase?.auth.signOut();
+    if (DEMO_MODE) setDemoSignedIn(false);
+    if (supabase) await signOutThisBrowser(supabase);
+    setMe(null);
+    setStatus("signedOut");
+  }, []);
+  // "Sign out everywhere" (Settings > Security): ends every session for this login.
+  const signOutEverywhere = useCallback(async () => {
+    if (DEMO_MODE) setDemoSignedIn(false);
+    if (supabase) await signOutAllBrowsers(supabase);
     setMe(null);
     setStatus("signedOut");
   }, []);
 
-  const value = useMemo(() => ({ status, me, mfaEnrolled, configured: DEMO_MODE || !!supabase, refresh, signOut }), [status, me, mfaEnrolled, refresh, signOut]);
+  const value = useMemo(() => ({ status, me, mfaEnrolled, configured: DEMO_MODE || !!supabase, refresh, signOut, signOutEverywhere }), [status, me, mfaEnrolled, refresh, signOut, signOutEverywhere]);
   return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }

@@ -1,13 +1,12 @@
 import { useCallback, useState } from "react";
 import { errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { markMfaVerified } from "../auth/teacherGate";
 import { DEMO_MODE, supabase } from "../auth/supabase";
 import { copy } from "./common";
 
 // Real Supabase MFA and password flows behind the design's security screens. No code is checked in the browser.
 export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
-  const { me, refresh } = useAuth();
+  const { me, refresh, signOutEverywhere } = useAuth();
   const [enroll, setEnroll] = useState<{ factorId: string; qr: string; secret: string } | null>(null);
   const [input, setInput] = useState("");
   const [error, setError] = useState(false);
@@ -53,7 +52,6 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
       return false;
     }
     setEnroll(null);
-    markMfaVerified();
     await refresh();
     flash("Two-factor authentication is on.");
     return true;
@@ -74,6 +72,11 @@ export function useSecurity(flash: (m: string) => void, onOpen?: () => void) {
   };
 
   return {
+    // Ends every session for this login (all browsers and devices). Plain Sign out ends only this browser.
+    signOutEverywhere: async () => {
+      if (!window.confirm("Sign out on every browser and device, including this one?")) return;
+      await signOutEverywhere();
+    },
     tfa: {
       on,
       off: !on,
