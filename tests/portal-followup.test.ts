@@ -36,6 +36,10 @@ const PUBLIC = new Set([
   "POST /api/invitations/verify",
   "POST /api/invitations/redeem",
   "POST /api/invitations/verify-code",
+  // Public widget times, the bearer-token ops summary, and the signed Stripe webhook (off unless card payments are on).
+  "GET /api/booking/availability",
+  "GET /api/ops/summary",
+  "POST /api/webhooks/stripe",
 ]);
 
 describe("legacy invoice pay links (migration only)", () => {
@@ -44,30 +48,6 @@ describe("legacy invoice pay links (migration only)", () => {
     expect(invoicePayUrl({ paymentLink: "https://pay.gohighlevel.com/invoice/abc" }, true)).toBeNull();
     expect(invoicePayUrl({ url: "/portal" }, false)).toBeNull();
     expect(invoicePayUrl({}, false)).toBeNull();
-  });
-});
-
-describe("referral mail on the route", () => {
-  it("sends only the allowlisted address when SMTP is configured", async () => {
-    const sendMail = vi.fn(async () => ({}));
-    const transport = vi.spyOn(nodemailer, "createTransport").mockReturnValue({ sendMail } as any);
-    const logs: string[] = [];
-    const log = vi.spyOn(console, "info").mockImplementation((message?: unknown) => { logs.push(String(message ?? "")); });
-    const deps = buildDeps({ parent, t: { role: "teacher", aal: "aal2" } });
-    deps.config.safeMode = true;
-    deps.config.features = { packages: true, autopay: true, referrals: true, recurring: true, invoiceActions: true };
-    deps.config.smtp = { user: "zane@sftradmusic.com", pass: "app-password-secret" };
-    const app = createApp(deps);
-    const sent = await request(app).post("/api/referrals/invite").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, email: "luperdev@gmail.com" });
-    expect(sent.status).toBe(200);
-    expect(sent.body.emailed).toBe(true);
-    expect(sendMail).toHaveBeenCalledWith(expect.objectContaining({ to: "luperdev@gmail.com", from: "SF Trad Music <zane@sftradmusic.com>" }));
-    const skipped = await request(app).post("/api/referrals/invite").set("Authorization", "Bearer parent").send({ studentId: STUDENT_A, email: "friend@example.com" });
-    expect(skipped.body.emailed).toBe(false);
-    expect(sendMail).toHaveBeenCalledTimes(1);
-    expect(logs.join("\n")).not.toContain("app-password-secret");
-    log.mockRestore();
-    transport.mockRestore();
   });
 });
 

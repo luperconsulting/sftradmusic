@@ -12,9 +12,8 @@ function walk(entry: string, out: string[] = []) {
   return out;
 }
 
-// The portal: its API server and its browser code. The public site's booking widget (src/BookPage.tsx) is a
-// separate page owned by another branch and is not portal data.
-const runtime = [...walk("server"), ...walk("api"), ...walk("src/portal"), "server.ts"].filter((f) => !f.split(path.sep).includes("legacy"));
+// Everything that runs: the API server, its Vercel entry, and all browser code (portal and booking page).
+const runtime = [...walk("server"), ...walk("api"), ...walk("src"), "server.ts"].filter((f) => !f.split(path.sep).includes("legacy"));
 
 describe("legacy GoHighLevel isolation", () => {
   it("has runtime files to check", () => {

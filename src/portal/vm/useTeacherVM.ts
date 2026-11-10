@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { studentFormError } from "../../../shared/student-form";
-import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
+import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, ReferralPanelDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
+import { formatMoney, SERIES_WEEKS_DEFAULT, SERIES_WEEKS_MAX, SESSION_PRICE_CENTS } from "../../../shared/pricing";
 import { api, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { supabase } from "../auth/supabase";
@@ -25,6 +26,15 @@ const startOfWeek = (offset: number) => {
 };
 const invoiceOverdue = (i: InvoiceDTO) => i.amountDue > 0 && !["paid", "void", "draft"].includes(i.status) && !!i.dueDate && new Date(i.dueDate).getTime() < Date.now();
 const invoiceDisplay = (i: InvoiceDTO) => (invoiceOverdue(i) ? "Overdue" : statusLabel[i.status] ?? i.status);
+const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const pad2 = (n: number) => String(n).padStart(2, "0");
+// <input type="time"> can't show 24:00, so a block that ends at midnight shows as 23:59 and saves back as 24:00.
+const toHM = (m: number) => (m >= 1440 ? "23:59" : `${pad2(Math.floor(m / 60))}:${pad2(m % 60)}`);
+const fromHM = (v: string) => { const [h, m] = v.split(":").map(Number); const t = (h || 0) * 60 + (m || 0); return t === 1439 ? 1440 : t; };
+const hoursText = (n: number) => String(Math.round(n * 100) / 100);
+type HourRow = { weekday: number; start: string; end: string };
+type StudioForm = { holdHours: string; rescheduleHours: string; cancelHours: string; zelle: string; timezone: string; hours: HourRow[] };
+const EACH_LESSON = `Each lesson uses a credit or creates its own ${formatMoney(SESSION_PRICE_CENTS)} invoice.`;
 
 export function useTeacherVM(screen: string): VM {
   const { me, signOut } = useAuth();
@@ -45,7 +55,12 @@ export function useTeacherVM(screen: string): VM {
   const [invites, setInvites] = useState<InvitationDTO[]>([]);
   const [issued, setIssued] = useState<Record<string, string>>({});
   const [settings, setSettings] = useState<any>(null);
-  const [profile, setProfile] = useState<{ student: StudentSummary; notes: NoteDTO[]; videos: AssignedVideoDTO[]; assignments: PracticeAssignmentDTO[]; lessons: LessonDTO[] | null; billing: BillingDTO | null; packageLessons?: number } | null>(null);
+  const [profile, setProfile] = useState<{ student: StudentSummary; notes: NoteDTO[]; videos: AssignedVideoDTO[]; assignments: PracticeAssignmentDTO[]; lessons: LessonDTO[] | null; billing: BillingDTO | null; packageLessons?: number; referrals?: ReferralPanelDTO | null } | null>(null);
+  const [studio, setStudio] = useState<StudioForm | null>(null);
+  const [studioError, setStudioError] = useState("");
+  const [studioSaving, setStudioSaving] = useState(false);
+  const [teacherRefs, setTeacherRefs] = useState<{ referrals: any[]; credits: any[] } | null>(null);
+  const [refsError, setRefsError] = useState("");
   const [loading, setLoading] = useState(true);
   const [apiDown, setApiDown] = useState("");
 
@@ -108,6 +123,21 @@ export function useTeacherVM(screen: string): VM {
     setLoading(false);
   }, []);
   useEffect(() => { void loadCore(); }, [loadCore]);
+  const studioToForm = (r: { settings: any; hours: { weekday: number; startMinute: number; endMinute: number }[] }): StudioForm => ({
+    holdHours: hoursText((r.settings?.holdWindowMinutes ?? 1440) / 60),
+    rescheduleHours: String(r.settings?.rescheduleNoticeHours ?? 24),
+    cancelHours: String(r.settings?.cancelNoticeHours ?? 24),
+    zelle: r.settings?.zelleRecipient ?? "",
+    timezone: r.settings?.timezone ?? TZ,
+    hours: [...(r.hours ?? [])].sort((a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute).map((h) => ({ weekday: h.weekday, start: toHM(h.startMinute), end: toHM(h.endMinute) })),
+  });
+  useEffect(() => {
+    if (screen !== "settings") return;
+    let live = true;
+    api("/teacher/studio").then((r) => { if (live) { setStudio(studioToForm(r)); setStudioError(""); } }).catch((e) => live && setStudioError(errorText(e)));
+    api("/teacher/referrals").then((r) => { if (live) { setTeacherRefs(r); setRefsError(""); } }).catch((e) => live && setRefsError(errorText(e)));
+    return () => { live = false; };
+  }, [screen]);
 
   const weekStart = useMemo(() => startOfWeek(calWeek), [calWeek]);
   useEffect(() => {
@@ -183,9 +213,10 @@ export function useTeacherVM(screen: string): VM {
   const openLessonDialog = (l: LessonDTO | null) => open("teacherLesson", {
     lesson: l,
     form: l
-      ? { date: ymdInTz(l.startTime), time: hmInTz(l.startTime), minutes: String(Math.round((new Date(l.endTime).getTime() - new Date(l.startTime).getTime()) / 60000)), location: l.isZoom ? "Zoom" : "Music City SF" }
-      : { date: "", time: "16:00", minutes: "60", location: st?.format === "Zoom" ? "Zoom" : "Music City SF" },
+      ? { date: ymdInTz(l.startTime), time: hmInTz(l.startTime), location: l.isZoom ? "Zoom" : "Music City SF" }
+      : { date: "", time: "16:00", location: st?.format === "Zoom" ? "Zoom" : "Music City SF", repeatWeekly: false, weeks: String(SERIES_WEEKS_DEFAULT) },
   });
+  const profRefs = profile?.referrals ?? null;
   const refreshAfterLessonChange = async () => {
     setCalTick((t) => t + 1);
     if (profile) await loadProfile(profile.student.id);
@@ -199,7 +230,9 @@ export function useTeacherVM(screen: string): VM {
     next: nextShort(row?.nextLesson ?? null),
     pay: !profile?.billing ? "Billing unavailable" : profUnpaid ? `Invoice #${profile.billing.openInvoices[0]?.number} unpaid` : "Paid up", payColor: profUnpaid ? "#9C5F22" : "#4A6149",
     packageLessons: profile?.packageLessons ?? row?.packageLessons ?? 0,
-    refCode: "—", referred: "Email from the student page", refCredit: "Reward after the first paid lesson", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
+    refCode: profRefs?.code || "—",
+    referred: profRefs ? `${profRefs.totalReferred} referred${profRefs.referredBy ? ` · joined with ${profRefs.referredBy.code}` : ""}` : "Unavailable",
+    refCredit: profRefs ? `${formatMoney(profRefs.creditsAvailableCents)} credit available` : "", noteCount: profile?.notes.length ?? 0, unpaid: profUnpaid,
     remind: guard(async () => {
       const open_ = profile?.billing?.openInvoices[0];
       if (open_) await api(`/teacher/invoices/${encodeURIComponent(open_.id)}/remind`, { method: "POST" });
@@ -212,14 +245,14 @@ export function useTeacherVM(screen: string): VM {
       await api(`/teacher/accounts/${row.accountId}/password-reset`, { method: "POST" });
       flash(`Secure password-reset link sent to ${owner}.`);
     }),
-    upcoming: lessonsSorted.filter((l) => new Date(l.startTime).getTime() >= now && l.status === "confirmed").slice(0, 3).map((l, i) => ({
-      ...lessonRow(l), status: i === 0 && profUnpaid ? "Unpaid" : "Booked", color: i === 0 && profUnpaid ? "#9C5F22" : "#1D2A44",
+    upcoming: lessonsSorted.filter((l) => new Date(l.startTime).getTime() >= now && (l.status === "confirmed" || l.status === "pending_payment")).slice(0, 3).map((l) => ({
+      ...lessonRow(l), status: l.status === "pending_payment" ? "Unpaid" : "Booked", color: l.status === "pending_payment" ? "#9C5F22" : "#1D2A44",
       move: () => openLessonDialog(l),
       cancel: guard(async () => {
         if (!window.confirm(`Cancel the lesson on ${lessonRow(l).date} at ${lessonRow(l).time}? Nobody is notified.`)) return;
-        await api(`/teacher/lessons/${l.id}/cancel`, { method: "POST", body: {} });
+        const res = await api<{ late?: boolean; refund?: string }>(`/teacher/lessons/${l.id}/cancel`, { method: "POST", body: {} });
         await refreshAfterLessonChange();
-        flash("Lesson cancelled. Nobody was notified.");
+        flash(res?.refund === "credit" ? "Lesson cancelled. The credit went back. Nobody was notified." : res?.refund === "invoice_voided" ? "Lesson cancelled and its invoice voided. Nobody was notified." : "Lesson cancelled. Nobody was notified.");
       }),
     })),
     past: lessonsSorted.filter((l) => new Date(l.startTime).getTime() < now && l.status !== "rescheduled").reverse().slice(0, 5).map((l) => {
@@ -227,7 +260,7 @@ export function useTeacherVM(screen: string): VM {
       return { ...lessonRow(l), invoice: "see invoices", status: cancelled ? "Cancelled" : "Attended", color: cancelled ? "rgba(17,22,27,.45)" : "#4A6149" };
     }),
     addLesson: () => openLessonDialog(null),
-    newInvoice: () => open("teacherInvoice", { form: { label: "Lesson", amount: "", dueDate: new Date().toISOString().slice(0, 10) } }),
+    newInvoice: () => open("teacherInvoice", { form: { label: "Lesson", amount: "", dueDate: ymdInTz(new Date().toISOString()), method: "zelle" } }),
   };
   const profileNotes = (profile?.notes ?? []).map((n) => ({ date: fmtDay(n.lessonDate, { month: "short", day: "numeric", year: "numeric" }), title: n.title || "Untitled note", status: n.status === "draft" ? "Draft" : "Published", sColor: n.status === "draft" ? "#9C5F22" : "#4A6149" }));
 
@@ -280,20 +313,23 @@ export function useTeacherVM(screen: string): VM {
       guardianEmail: form.guardianEmail ?? "",
       format: form.format,
     };
+    const referralCode = String(form.referralCode ?? "").trim();
     const problem = studentFormError(payload);
     if (problem) return patchForm({ error: problem });
     patchForm({ saving: true, error: "" });
     try {
-      const { student, guardian } = await api("/teacher/students", { method: "POST", body: {
+      const { student, guardian, referral } = await api("/teacher/students", { method: "POST", body: {
         fullName: payload.fullName.trim(),
         ageCategory: payload.ageCategory,
         email: payload.email.trim(),
         guardianName: payload.guardianName.trim(),
         guardianEmail: payload.guardianEmail.trim(),
         format: payload.format,
+        ...(referralCode ? { referralCode } : {}),
       } });
       setStudents((await api("/teacher/students")).students);
-      patchForm({ saving: false, created: { ...student, contactNote: guardianNote(guardian) } });
+      const refNote = referral === "applied" ? " Referral code applied: $15 off their first invoice." : referral === "invalid" ? " The referral code wasn't valid, so no discount was added." : "";
+      patchForm({ saving: false, created: { ...student, contactNote: guardianNote(guardian) + refNote } });
     } catch (e) {
       patchForm({ saving: false, error: errorText(e) });
     }
@@ -341,7 +377,7 @@ export function useTeacherVM(screen: string): VM {
   const openInv = list.filter((i) => i.amountDue > 0 && !["paid", "void", "draft"].includes(i.status));
   const sum = (l: InvoiceDTO[], f: (i: InvoiceDTO) => number) => l.reduce((a, i) => a + f(i), 0);
   const overdue = list.filter(invoiceOverdue);
-  const ghlInvoices = list.filter((i) => {
+  const invoiceRows = list.filter((i) => {
     const d = invoiceDisplay(i);
     const filterOk = invFilter === "All" || (invFilter === "Open" ? openInv.includes(i) : d === invFilter);
     return filterOk && (!invQ || `${i.contactName}${i.number}${i.title}`.toLowerCase().includes(invQ.toLowerCase()));
@@ -349,17 +385,19 @@ export function useTeacherVM(screen: string): VM {
     const d = invoiceDisplay(i);
     const student = students.find((s) => s.id === i.studentId);
     const colors: any = { Paid: "#4A6149", Sent: "#C27D38", Overdue: "#9C5F22", Draft: "rgba(17,22,27,.45)", Void: "rgba(17,22,27,.35)" };
-    const runInvoice = (action: "send" | "remind" | "void" | "mark-paid", label: string) => guard(async () => {
+    const runInvoice = (action: "send" | "remind" | "void", label: string) => guard(async () => {
       if (action === "void" && !window.confirm(`Void invoice #${i.number}? This can't be undone.`)) return;
       const res = await api<{ suppressed?: boolean }>(`/teacher/invoices/${encodeURIComponent(i.id)}/${action}`, { method: "POST", body: {} });
       loadInvoices();
       if (profile && profile.student.id === i.studentId) void loadProfile(profile.student.id);
-      flash(res?.suppressed ? REMIND_OFF : action === "mark-paid" ? `Invoice #${i.number} marked paid. Nothing was charged.` : `${label} saved.`);
+      flash(res?.suppressed ? REMIND_OFF : action === "send" ? `Invoice #${i.number} issued. The family can see it now.` : `${label} saved.`);
     });
-    const button = (label: string, color: string, action: "send" | "remind" | "void" | "mark-paid") => ({ label, color, run: runInvoice(action, label) });
-    const actions = d === "Draft" ? [button("Issue", "#1D2A44", "send"), button("Void", "#9C5F22", "void")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), button("Mark paid", "#4A6149", "mark-paid"), button("Void", "#9C5F22", "void")];
+    const button = (label: string, color: string, action: "send" | "remind" | "void") => ({ label, color, run: runInvoice(action, label) });
+    const markPaid = { label: "Mark paid", color: "#4A6149", run: () => open("markPaid", { invoice: i, form: { method: i.paymentMethod === "cash" ? "cash" : "zelle", paidAt: ymdInTz(new Date().toISOString()), reference: "" } }) };
+    const actions = d === "Draft" ? [button("Issue", "#1D2A44", "send"), button("Void", "#9C5F22", "void")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), markPaid, button("Void", "#9C5F22", "void")];
+    const methodWord = i.paymentMethod === "cash" ? "Cash" : i.paymentMethod === "zelle" ? "Zelle" : i.paymentMethod === "card" ? "Card" : "";
     return {
-      num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: d, color: colors[d] ?? "#1D2A44", actions,
+      num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: methodWord ? `${i.title} · ${methodWord}` : i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: d, color: colors[d] ?? "#1D2A44", actions,
       openStudent: () => (student ? navigate(`/teacher/students/${student.id}`) : flash(`${i.contactName} isn't linked to an enrolled student.`)),
     };
   });
@@ -373,10 +411,11 @@ export function useTeacherVM(screen: string): VM {
     const isToday = key === new Date().toDateString();
     const evs = (events ?? []).filter((e) => new Date(e.startTime).toDateString() === key).sort((a, b) => a.startTime.localeCompare(b.startTime)).map((e) => {
       const zoom = /zoom/i.test(`${e.address} ${e.title}`);
-      const unpaidStudent = false;
+      const held = e.status === "pending_payment";
+      const holdUntil = held && e.holdExpiresAt ? ` · hold until ${fmt(e.holdExpiresAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "";
       return {
-        time: clock(e.startTime), name: e.studentName, meta: zoom ? "Zoom" : e.address || "Music City SF",
-        accent: zoom ? "#9C5F22" : "#1D2A44", bg: zoom ? "rgba(156,95,34,.07)" : "rgba(29,42,68,.06)", color: "#11161B", border: unpaidStudent ? "#9C5F22" : "transparent", borderStyle: "solid",
+        time: clock(e.startTime), name: e.studentName, meta: `${zoom ? "Zoom" : e.address || "Music City SF"}${held ? ` · Unpaid${holdUntil}` : ""}`,
+        accent: zoom ? "#9C5F22" : "#1D2A44", bg: zoom ? "rgba(156,95,34,.07)" : "rgba(29,42,68,.06)", color: "#11161B", border: held ? "#9C5F22" : "transparent", borderStyle: held ? "dashed" : "solid",
         open: () => (e.studentId ? navigate(`/teacher/students/${e.studentId}`) : flash(`${e.studentName} isn't linked to an enrolled student.`)),
       };
     });
@@ -400,15 +439,15 @@ export function useTeacherVM(screen: string): VM {
   ];
   const upcoming = (events ?? []).filter((e) => new Date(e.startTime).getTime() >= now).sort((a, b) => a.startTime.localeCompare(b.startTime)).slice(0, 4).map((e) => {
     const zoom = /zoom/i.test(`${e.address} ${e.title}`);
-    return { day: fmt(e.startTime, { weekday: "short", day: "numeric" }), time: clock(e.startTime), name: e.studentName, loc: zoom ? "Zoom" : "Music City SF", icon: zoom ? "ph ph-video-camera" : "ph ph-map-pin", status: e.status === "confirmed" ? "Confirmed" : "Pending", sColor: e.status === "confirmed" ? "#4A6149" : "rgba(17,22,27,.5)" };
+    return { day: fmt(e.startTime, { weekday: "short", day: "numeric" }), time: clock(e.startTime), name: e.studentName, loc: zoom ? "Zoom" : "Music City SF", icon: zoom ? "ph ph-video-camera" : "ph ph-map-pin", status: e.status === "confirmed" ? "Confirmed" : e.status === "pending_payment" ? "Unpaid" : e.status === "completed" ? "Completed" : "Pending", sColor: e.status === "confirmed" ? "#4A6149" : e.status === "pending_payment" ? "#9C5F22" : "rgba(17,22,27,.5)" };
   });
 
   // ---- dialogs
   const dk = dialog?.kind ?? "", dd = dialog?.data ?? {};
-  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: "Add a student", teacherLesson: dialog?.data.lesson ? "Move lesson" : "Add a lesson", teacherInvoice: "New invoice", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
-  const dlgKickers: any = { addStudent: "Students", teacherLesson: st?.fullName ?? "Lessons", teacherInvoice: st?.fullName ?? "Billing", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
+  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: "Add a student", teacherLesson: dialog?.data.lesson ? "Move lesson" : "Add a lesson", teacherInvoice: "New invoice", markPaid: dd.invoice ? `Mark invoice #${dd.invoice.number} paid` : "Mark paid", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
+  const dlgKickers: any = { addStudent: "Students", teacherLesson: st?.fullName ?? "Lessons", teacherInvoice: st?.fullName ?? "Billing", markPaid: "Billing", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
   const dlg: any = { open: !!dialog, width: "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate", "teacherLesson", "teacherInvoice"].forEach((k) => { dlg[k] = dk === k; });
+  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "enroll2fa", "migrate", "teacherLesson", "teacherInvoice", "markPaid"].forEach((k) => { dlg[k] = dk === k; });
   const hasUnpaid = openInv.length > 0;
   const connected = (b?: boolean) => (b ? "Ready" : "Unavailable");
   const integrations = settings?.integrations;
@@ -430,7 +469,6 @@ export function useTeacherVM(screen: string): VM {
     }, remindLabel: hasUnpaid ? `Remind ${openInv.length} unpaid` : "No unpaid lessons", remindOpacity: hasUnpaid ? 1 : 0.45,
     recentNotes: (overview?.recentNotes ?? []).map((n: any) => ({ name: n.studentName, date: fmtDay(n.lessonDate), title: n.title, status: n.status === "draft" ? "Draft" : "Published", sColor: n.status === "draft" ? "#9C5F22" : "#4A6149" })),
     recentVideos: (overview?.recentVideos ?? []).map((x: any) => ({ title: x.title, to: x.to, assigned: fmt(x.assignedAt, { month: "short", day: "numeric" }) })),
-    ghl: { calEmbed: false, calNative: true, calUrl: "", invEmbed: false, invNative: true, invUrl: "" },
     cal: { days: calDays, label: `${mon(weekStart)} ${weekStart.getDate()} – ${mon(weekEnd) !== mon(weekStart) ? `${mon(weekEnd)} ` : ""}${weekEnd.getDate()}, ${weekEnd.getFullYear()}`, prev: () => setCalWeek((w) => w - 1), next: () => setCalWeek((w) => w + 1), today: () => setCalWeek(0) },
     invStats: invoiceError ? [{ label: "Invoices", value: "—", sub: invoiceError, color: "rgba(17,22,27,.6)" }] : [
       { label: "Outstanding", value: `$${sum(openInv, (i) => i.amountDue)}`, sub: `${openInv.length} open invoices`, color: "#1D2A44" },
@@ -439,7 +477,7 @@ export function useTeacherVM(screen: string): VM {
       { label: "Drafts", value: String(list.filter((i) => i.status === "draft").length), sub: "Not visible to families", color: "rgba(17,22,27,.6)" },
     ],
     invFilters: ["All", "Open", "Overdue", "Paid", "Draft"].map((f) => ({ label: f, pick: () => setInvFilter(f), bg: invFilter === f ? "#1D2A44" : "transparent", color: invFilter === f ? "#fff" : "rgba(17,22,27,.7)", border: invFilter === f ? "#1D2A44" : "rgba(17,22,27,.15)" })),
-    invQ, setInvQ: (e: any) => setInvQ(e.target.value), ghlInvoices,
+    invQ, setInvQ: (e: any) => setInvQ(e.target.value), invoiceRows,
     openAddStudent,
     noStudentsTitle: query ? `No students match “${query}”` : "No students yet", noStudentsHint: query ? "Try a different spelling, or invite a new family." : "Add a student to get started.", hasQuery: !!query,
     sf: {
@@ -466,7 +504,7 @@ export function useTeacherVM(screen: string): VM {
         await persistNote();
         setSavedAt(clock(new Date().toISOString()));
         flash("Draft saved. Private to you.");
-      } else flash(screen === "settings" ? "Referral rewards stay as placeholders. Send a referral from the student page." : "Assignments are saved when you assign them.");
+      } else flash("Assignments are saved when you assign them.");
     }),
     pickPublished: guard(async () => {
       const saved = await persistNote();
@@ -563,29 +601,76 @@ export function useTeacherVM(screen: string): VM {
       flash(`A one-time code was emailed to ${email}. They enter it at ${page}, then choose a password and turn on two-factor authentication.`);
     }),
     // Migrate
-    migrateBilling: [["student", "The student", "Invoices and Stripe Link go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),
+    migrateBilling: [["student", "The student", "Invoices go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),
     doMigrate: () => flash("Account transfers need the billing change reviewed first. Use Zane's checklist for now."),
     // Settings
-    settingsStatus: connected(integrations?.supabase), storageStatus: connected(integrations?.storage), cardSavingUnavailable: settings ? settings.cardSaving === false : false, referralMailOff: settings ? settings.referralMail === false : false, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
+    settingsStatus: connected(integrations?.supabase), storageStatus: connected(integrations?.storage), calendarStatus: connected(integrations?.googleCalendar), emailStatus: connected(integrations?.email),
+    cardStatus: settings ? (settings.cardPayments ? "On (test mode)" : "Off") : "—", safeModeOn: !!settings?.safeMode, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
+    studio: {
+      loading: !studio && !studioError, error: studioError, ready: !!studio, saving: studioSaving,
+      form: studio ?? { holdHours: "", rescheduleHours: "", cancelHours: "", zelle: "", timezone: TZ, hours: [] },
+      weekdays: WEEKDAYS.map((label, id) => ({ id, label })),
+      set: (k: keyof StudioForm) => (e: any) => setStudio((f) => (f ? { ...f, [k]: e.target.value } : f)),
+      setRow: (i: number, k: keyof HourRow) => (e: any) => setStudio((f) => (f ? { ...f, hours: f.hours.map((h, j) => (j === i ? { ...h, [k]: k === "weekday" ? Number(e.target.value) : e.target.value } : h)) } : f)),
+      removeRow: (i: number) => () => setStudio((f) => (f ? { ...f, hours: f.hours.filter((_, j) => j !== i) } : f)),
+      addRow: () => setStudio((f) => (f ? { ...f, hours: [...f.hours, { weekday: f.hours.length ? (f.hours[f.hours.length - 1].weekday + 1) % 7 : 2, start: "15:00", end: "19:00" }] } : f)),
+      save: async () => {
+        if (!studio || studioSaving) return;
+        const hold = Math.round(Number(studio.holdHours) * 60);
+        const resched = Number(studio.rescheduleHours), cancel = Number(studio.cancelHours);
+        if (!(hold >= 15 && hold <= 10080)) return setStudioError("Hold window must be between 0.25 and 168 hours.");
+        if (![resched, cancel].every((n) => Number.isInteger(n) && n >= 0 && n <= 336)) return setStudioError("Notice windows must be whole hours between 0 and 336.");
+        const hours = studio.hours.map((h) => ({ weekday: h.weekday, startMinute: fromHM(h.start), endMinute: fromHM(h.end) }));
+        if (hours.some((h) => h.endMinute - h.startMinute < 60)) return setStudioError("Each time range must fit at least one 60-minute lesson.");
+        setStudioSaving(true);
+        setStudioError("");
+        try {
+          const r = await api("/teacher/studio", { method: "PUT", body: { holdWindowMinutes: hold, rescheduleNoticeHours: resched, cancelNoticeHours: cancel, zelleRecipient: studio.zelle.trim(), hours } });
+          setStudio(studioToForm(r));
+          flash("Lesson hours and policies saved.");
+        } catch (e) {
+          setStudioError(errorText(e));
+        } finally {
+          setStudioSaving(false);
+        }
+      },
+    },
+    tRefs: {
+      error: refsError, loading: !teacherRefs && !refsError, ready: !!teacherRefs,
+      rows: (teacherRefs?.referrals ?? []).map((r: any) => ({ who: `${r.referrer || "—"} → ${r.referred || "—"}`, meta: `Code ${r.code} · ${fmt(r.createdAt, { month: "short", day: "numeric", year: "numeric" })}${r.completedAt ? ` · paid ${fmt(r.completedAt, { month: "short", day: "numeric" })}` : ""}`, status: r.status === "completed" ? "Completed" : r.status === "pending" ? "Pending" : String(r.status ?? ""), color: r.status === "completed" ? "#4A6149" : "#C27D38" })),
+      credits: (teacherRefs?.credits ?? []).map((c: any) => ({ who: c.student || "—", amount: `$${Number(c.amount ?? 0).toLocaleString()}`, status: c.used ? "Used" : "Available", color: c.used ? "rgba(17,22,27,.45)" : "#4A6149", date: fmt(c.createdAt, { month: "short", day: "numeric" }) })),
+      empty: !!teacherRefs && !teacherRefs.referrals.length && !teacherRefs.credits.length,
+      summary: teacherRefs ? `${teacherRefs.referrals.length} referral${teacherRefs.referrals.length === 1 ? "" : "s"} · ${teacherRefs.referrals.filter((r: any) => r.status === "completed").length} completed` : "",
+    },
     recoveryLine: "Not available yet", recoveryCta: "Details",
     // Teacher lesson and invoice dialogs (Supabase only, nothing is sent)
     tl: {
       form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
-      saveLabel: dd.lesson ? "Move lesson" : "Add lesson",
+      saveLabel: dd.lesson ? "Move lesson" : form.repeatWeekly ? `Add ${form.weeks || SERIES_WEEKS_DEFAULT} weekly lessons` : "Add lesson",
+      isNew: !dd.lesson,
+      toggleRepeat: () => patchForm({ repeatWeekly: !form.repeatWeekly }),
+      weekOpts: Array.from({ length: SERIES_WEEKS_MAX - 1 }, (_, i) => i + 2),
+      note: EACH_LESSON,
       locations: ["Music City SF", "Zoom"].map((id) => ({ id, label: id === "Zoom" ? "Zoom" : "In person", on: form.location === id, pick: () => patchForm({ location: id }) })),
       save: async () => {
         if (form.saving || !st) return;
         if (!form.date || !form.time) return patchForm({ error: "Choose a date and start time." });
-        const minutes = Number(form.minutes || 60);
-        if (!Number.isInteger(minutes) || minutes < 15 || minutes > 240) return patchForm({ error: "Length must be between 15 and 240 minutes." });
         patchForm({ saving: true, error: "" });
         try {
-          const body = { startTime: wallTimeToIso(form.date, form.time), minutes, location: form.location };
+          const body = { startTime: wallTimeToIso(form.date, form.time), location: form.location };
+          let msg = "Lesson moved. Nobody was notified.";
           if (dd.lesson) await api(`/teacher/lessons/${dd.lesson.id}/reschedule`, { method: "POST", body });
-          else await api("/teacher/lessons", { method: "POST", body: { ...body, studentId: st.id } });
+          else {
+            const weeks = Number(form.weeks) || SERIES_WEEKS_DEFAULT;
+            const res = await api<{ lessons?: LessonDTO[] }>("/teacher/lessons", { method: "POST", body: { ...body, studentId: st.id, ...(form.repeatWeekly ? { repeatWeekly: true, weeks } : {}) } });
+            const made = res.lessons ?? [];
+            const held = made.filter((l) => l.status === "pending_payment").length;
+            msg = `${made.length > 1 ? `${made.length} lessons added` : "Lesson added"}${held ? `; ${held} held until paid` : ""}. Nobody was notified.`;
+          }
           close();
           await refreshAfterLessonChange();
-          flash(dd.lesson ? "Lesson moved. Nobody was notified." : "Lesson added. Nobody was notified.");
+          loadInvoices();
+          flash(msg);
         } catch (e) {
           patchForm({ saving: false, error: errorText(e) });
         }
@@ -594,17 +679,38 @@ export function useTeacherVM(screen: string): VM {
     ti: {
       form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
       payerLine: st ? `Billed to ${adult ? st.fullName : st.guardianName ?? "the parent"}. Saved in the portal only; nothing is emailed or charged.` : "",
+      methods: [["zelle", "Zelle"], ["cash", "Cash"]].map(([id, label]) => ({ id, label, on: (form.method ?? "zelle") === id, pick: () => patchForm({ method: id }) })),
       save: async () => {
         if (form.saving || !st) return;
         const amount = Number(form.amount);
         if (!(amount > 0)) return patchForm({ error: "Enter an amount." });
         patchForm({ saving: true, error: "" });
         try {
-          await api("/teacher/invoices", { method: "POST", body: { studentId: st.id, lines: [{ label: (form.label || "Lesson").trim(), amount }], ...(form.dueDate ? { dueDate: form.dueDate } : {}) } });
+          await api("/teacher/invoices", { method: "POST", body: { studentId: st.id, lines: [{ label: (form.label || "Lesson").trim(), amount }], method: form.method === "cash" ? "cash" : "zelle", ...(form.dueDate ? { dueDate: form.dueDate } : {}) } });
           close();
           loadInvoices();
           await loadProfile(st.id);
           flash("Invoice created. It's visible to the family now; nothing was emailed.");
+        } catch (e) {
+          patchForm({ saving: false, error: errorText(e) });
+        }
+      },
+    },
+    mp: {
+      form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
+      line: dd.invoice ? `${dd.invoice.contactName} · $${Number(dd.invoice.amountDue ?? dd.invoice.total).toLocaleString()} due` : "",
+      methods: [["zelle", "Zelle"], ["cash", "Cash"]].map(([id, label]) => ({ id, label, on: form.method === id, pick: () => patchForm({ method: id }) })),
+      save: async () => {
+        if (form.saving || !dd.invoice) return;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(form.paidAt ?? "")) return patchForm({ error: "Choose the date the payment arrived." });
+        patchForm({ saving: true, error: "" });
+        try {
+          await api(`/teacher/invoices/${encodeURIComponent(dd.invoice.id)}/mark-paid`, { method: "POST", body: { method: form.method === "cash" ? "cash" : "zelle", paidAt: form.paidAt, reference: String(form.reference ?? "").trim() } });
+          close();
+          loadInvoices();
+          if (profile && profile.student.id === dd.invoice.studentId) void loadProfile(profile.student.id);
+          setStudents((await api("/teacher/students")).students);
+          flash(`Invoice #${dd.invoice.number} marked paid.${dd.invoice.kind === "package" ? " 4 lesson credits added." : ""}`);
         } catch (e) {
           patchForm({ saving: false, error: errorText(e) });
         }

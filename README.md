@@ -85,3 +85,28 @@ Replace `<team-slug>` with the Vercel team's slug (the part of the dashboard URL
    Redeploy after setting them.
 
 **Checking it works:** open `/api/booking/availability?from=YYYY-MM-DD&to=YYYY-MM-DD` on the deployment, with a range of 31 days or less. If any setting is missing, or Google refuses the exchange or the calendar read, it returns `503 availability_unavailable` and nothing else. The Vercel function log then shows a short reason such as `[google] free/busy failed: google auth 403` or `google calendar not readable`. Local `npm run dev` has no Vercel OIDC token unless you run `vercel env pull`, so locally the endpoint returns the safe error.
+
+## Student and teacher portal (v1)
+
+Supabase (Postgres, Auth, Storage) is the only source of truth. GoHighLevel is not used at runtime; the old
+client lives in `server/legacy/ghl/` for migrating records only, and `tests/legacy-isolation.test.ts` fails if
+anything that runs imports it.
+
+- **Open lesson times** = the teacher's weekly lesson hours (Teacher → Settings) minus Google Calendar busy times
+  (the keyless setup above) minus lessons already booked or held. Lessons are 60 minutes. A Postgres exclusion
+  constraint (`lessons_no_overlap`) stops double booking even if two requests race.
+- **Prices**: 4-lesson package $380 by Zelle or $375 in cash up front; single session $100. Zelle and cash are
+  paid offline. A package invoice adds 4 credits only when the teacher marks it paid. A booking without credits
+  creates a $100 invoice and holds the slot ("pending payment") until it is marked paid; unpaid holds release after
+  the teacher's hold window (default 24 hours) or at the lesson start. Holds are released whenever lessons are
+  read or booked, so no scheduler is needed.
+- **Referrals**: $15 off a referred student's first invoice; when it is paid the referrer gets a $25 credit,
+  taken off their next invoice once.
+- **Card payments** (Stripe Checkout, test keys only) appear only with `CARD_PAYMENTS_ENABLED=true`; the webhook is
+  `/api/webhooks/stripe` and handles each event once.
+- **Email** goes through Gmail SMTP as zane@sftradmusic.com. With `SAFE_MODE` on (Preview), only
+  `SAFE_MODE_EMAIL_ALLOWLIST` addresses are emailed.
+- **Ops**: `GET /api/ops/summary` with `Authorization: Bearer $OPS_API_TOKEN` returns today's lessons, unpaid
+  invoices, pending holds, pending referrals and new bookings. Read-only.
+- **Database**: `supabase/migrations/0005_core_data.sql` and `0006_portal_v1.sql` are not applied. Apply them
+  yourself, in order, after review.

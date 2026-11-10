@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import request from "supertest";
 import { createApp } from "../server/app";
-import { FEATURE_REVIEWS, featuresForEnv } from "../server/features";
 import { buildDeps } from "./helpers";
 import { statSync } from "node:fs";
 import { applySeed, buildArzoSeed, cleanupSeed, emptyStore, invoiceFixturePlan, pageChecks, seedGuard, videoSeedGuard } from "../scripts/arzoSeed";
@@ -55,25 +54,5 @@ describe("Arzo seed plan", () => {
     const prod = seedGuard({ VERCEL_ENV: "production", SUPABASE_URL: "https://x.supabase.co", SUPABASE_SERVICE_ROLE_KEY: "k", GHL_PRIVATE_INTEGRATION_TOKEN: "t", GHL_LOCATION_ID: "l", GHL_LESSON_CALENDAR_ID: "c" });
     expect(prod.ok).toBe(false);
     if (!prod.ok) expect(prod.blocked).toMatch(/production/);
-  });
-});
-
-describe("feature flags", () => {
-  it("turns the reviewed flags on for preview only; portal self-booking stays off", () => {
-    const on = { packages: true, autopay: true, referrals: true, recurring: false, invoiceActions: true };
-    const off = { packages: false, autopay: false, referrals: false, recurring: false, invoiceActions: false };
-    expect(featuresForEnv({ VERCEL_ENV: "preview" })).toEqual(on);
-    expect(featuresForEnv({ VERCEL_ENV: "production" })).toEqual(off);
-    expect(Object.entries(FEATURE_REVIEWS).filter(([, review]) => !review.pass).map(([name]) => name)).toEqual(["recurring"]);
-  });
-
-  it("leaves package, autopay and referral actions returning 501 outside preview; invoice actions validate ids", async () => {
-    const app = createApp(buildDeps({ parent, t: { role: "teacher" } }));
-    for (const path of ["/api/packages/purchase", "/api/autopay", "/api/referrals/invite", "/api/referrals/apply"]) {
-      expect((await request(app).post(path).set("Authorization", "Bearer parent").send({})).status).toBe(501);
-    }
-    for (const action of ["send", "remind", "void", "mark-paid"]) {
-      expect((await request(app).post(`/api/teacher/invoices/x/${action}`).set("Authorization", "Bearer t").send({})).status).toBe(400);
-    }
   });
 });

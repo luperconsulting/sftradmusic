@@ -41,6 +41,7 @@ export default function AddStudentDialog({ v }: { v: VM }) {
               {s.formats.map((f: any) => (<button key={f.id} type="button" onClick={f.pick} aria-pressed={f.on} style={{ border: "0", borderRadius: "2px", padding: "7px 14px", fontSize: "12px", fontWeight: "600", cursor: "pointer", background: f.on ? "#1D2A44" : "transparent", color: f.on ? "#fff" : "rgba(17,22,27,.7)" }}>{f.label}</button>))}
             </div>
           </div>
+          <label style={label}><span style={cap}>Referral code (optional)</span><input className="dc-f6" value={s.form.referralCode ?? ""} onChange={s.set("referralCode")} placeholder="From the friend who referred them" style={input} /></label>
           {s.error && <div role="alert" style={{ fontSize: "13px", color: "#9C5F22" }}>{s.error}</div>}
           <button className="dc-h3" disabled={s.saving} onClick={s.save} style={{ ...primary, opacity: s.saving ? ".7" : "1" }}>{s.saving ? "Saving…" : "Add student"}</button>
         </>

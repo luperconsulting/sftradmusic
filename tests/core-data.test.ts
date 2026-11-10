@@ -140,9 +140,9 @@ describe("outstanding balance calculation", () => {
 
     const dash = await get("/api/portal/dashboard", "arzo");
     expect(dash.body.billing).toMatchObject({ outstanding: 0, bookingBlocked: false });
-    // No longer blocked by the balance. Self-booking itself waits for availability in Supabase.
-    expect((await book()).body.error.code).toBe("booking_unavailable");
-    // Nothing is charged: Pay Now says so.
+    // No longer blocked by the balance (the slot itself isn't inside lesson hours in this fixture).
+    expect((await book()).body.error.code).toBe("slot_unavailable");
+    // Nothing is charged: Pay Now on a paid invoice has nothing to pay.
     expect((await post("/api/invoices/11111111-aaaa-4aaa-8aaa-111111111111/send-payment-link", "arzo")).status).toBe(409);
   });
 });
@@ -156,7 +156,7 @@ describe("invoice history", () => {
         invoiceRow(STUDENT_B, PAYER_B, 9000, { id: "draft", number: 2003, status: "draft" }),
         invoiceRow(STUDENT_A, PAYER_A, 5000, { id: "arzo-own", number: 2004 }),
       );
-      t.payments.push({ id: "p1", invoiceId: "old", payerId: PAYER_B, amountCents: 9000, method: "check", status: "succeeded", paidAt: "2026-10-03T18:00:00.000Z", note: "" });
+      t.payments.push({ id: "p1", invoiceId: "old", payerId: PAYER_B, amountCents: 9000, method: "check", status: "succeeded", paidAt: "2026-10-03T18:00:00.000Z", note: "", reference: "" });
     });
     const res = await get("/api/portal/dashboard", "guardian");
     expect(res.body.billing.history.map((i: any) => i.id)).toEqual(["old", "new"]);
@@ -214,7 +214,7 @@ describe("portal behavior with all GHL env vars missing", () => {
       const teach = as("teach");
 
       expect((await request(app).get("/api/health")).body).toEqual({ supabase: true });
-      expect((await teach.get("/api/teacher/settings")).body.integrations).toEqual({ supabase: true, storage: true });
+      expect((await teach.get("/api/teacher/settings")).body.integrations).toMatchObject({ supabase: true, storage: true });
 
       const created = await teach.post("/api/teacher/students", { fullName: "Arzo Luper II", ageCategory: "child", guardianName: "Arzo Luper", guardianEmail: "luperdev+guardian@gmail.com" });
       expect(created.status).toBe(200);
@@ -228,7 +228,8 @@ describe("portal behavior with all GHL env vars missing", () => {
       }
       const profile = await teach.get(`/api/teacher/students/${id}`);
       expect(profile.body.lessons).toHaveLength(1);
-      expect(profile.body.billing.outstanding).toBe(90);
+      // The lesson had no credit, so it carries its own $100 invoice, plus the $90 manual invoice.
+      expect(profile.body.billing.outstanding).toBe(190);
 
       const family = await as("arzo").get("/api/portal/dashboard");
       expect(family.status).toBe(200);

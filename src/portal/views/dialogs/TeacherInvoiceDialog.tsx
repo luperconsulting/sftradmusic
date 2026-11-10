@@ -13,6 +13,12 @@ export default function TeacherInvoiceDialog({ v }: { v: VM }) {
       <label style={label}><span style={cap}>Item</span><input className="dc-f6" value={t.form.label ?? ""} onChange={t.set("label")} placeholder="Lesson" style={input} /></label>
       <label style={label}><span style={cap}>Amount (USD)</span><input className="dc-f6" type="number" min={1} step="0.01" value={t.form.amount ?? ""} onChange={t.set("amount")} style={input} /></label>
       <label style={label}><span style={cap}>Due date</span><input className="dc-f6" type="date" value={t.form.dueDate ?? ""} onChange={t.set("dueDate")} style={input} /></label>
+      <div style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+        <span style={cap}>Payment method</span>
+        <div style={{ display: "inline-flex", border: "1px solid rgba(17,22,27,.12)", borderRadius: "2px", padding: "3px", gap: "3px", alignSelf: "flex-start" }}>
+          {t.methods.map((o: any) => (<button key={o.id} type="button" onClick={o.pick} aria-pressed={o.on} style={{ border: "0", borderRadius: "2px", padding: "7px 14px", fontSize: "12px", fontWeight: "600", cursor: "pointer", background: o.on ? "#1D2A44" : "transparent", color: o.on ? "#fff" : "rgba(17,22,27,.7)" }}>{o.label}</button>))}
+        </div>
+      </div>
       {t.error && <div role="alert" style={{ fontSize: "13px", color: "#9C5F22" }}>{t.error}</div>}
       <button className="dc-h3" disabled={t.saving} onClick={t.save} style={{ ...primary, opacity: t.saving ? ".7" : "1" }}>{t.saving ? "Saving…" : "Create invoice"}</button>
       <div style={{ fontSize: "11px", color: "rgba(17,22,27,.5)" }}>{t.payerLine}</div>

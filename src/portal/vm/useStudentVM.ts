@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { formatPackageMoney, LESSON_PACKAGES } from "../../../shared/lesson-packages";
+import { formatMoney, PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRAL_DISCOUNT_CENTS, REFERRER_CREDIT_CENTS, SERIES_WEEKS_DEFAULT, SERIES_WEEKS_MAX, SESSION_PRICE_CENTS, type PackageMethod } from "../../../shared/pricing";
 import { OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type SlotsResponse } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -9,29 +9,31 @@ import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
 const CATS = ["All", "Technique", "Repertoire", "Practice Exercises", "Music Theory", "Additional Resources"];
-const packageCard = (id: string) => {
-  const item = LESSON_PACKAGES.find((pkg) => pkg.id === id) ?? LESSON_PACKAGES[1];
-  return {
-    ...item,
-    price: formatPackageMoney(item.amountCents),
-    list: formatPackageMoney(item.listCents),
-    save: formatPackageMoney(item.saveCents),
-    per: `${formatPackageMoney(Math.round(item.amountCents / item.lessons))} / lesson`,
-  };
-};
-const NOT_ACTIVE = "This option isn't available yet. Ask Zane if you'd like it.";
+const PREVIEW_OFF = "Actions are disabled in teacher preview.";
+const SESSION_PRICE = formatMoney(SESSION_PRICE_CENTS);
+const EACH_LESSON = `Each lesson uses a credit or creates its own ${SESSION_PRICE} invoice.`;
+const METHOD_LABEL: Record<PackageMethod, string> = { zelle: "Zelle", cash: "Cash (paid up front)", card: "Card" };
 const pad = (n: number) => String(n).padStart(2, "0");
-const statusWord: Record<string, string> = { sent: "Unpaid", overdue: "Overdue", partially_paid: "Partially paid", payment_processing: "Processing", paid: "Paid", void: "Void" };
+const statusWord: Record<string, string> = { sent: "Awaiting payment", overdue: "Overdue", partially_paid: "Partially paid", payment_processing: "Processing", paid: "Paid", void: "Void", draft: "Draft" };
+const lessonWord = (l: LessonDTO) => (l.status === "pending_payment" ? "Awaiting payment" : l.status === "confirmed" ? "Confirmed" : l.status.charAt(0).toUpperCase() + l.status.slice(1).replace(/_/g, " "));
+const holdLine = (l: LessonDTO) => (l.status === "pending_payment" && l.holdExpiresAt ? `Held until ${fmt(l.holdExpiresAt, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "");
 
 function nextView(lesson: LessonDTO | undefined) {
-  if (!lesson) return { date: "No lesson booked", time: "—", loc: "—", locSub: "", status: "Not booked", icon: "ph ph-calendar-blank" };
+  if (!lesson) return { date: "No lesson booked", time: "—", loc: "—", locSub: "", status: "Not booked", icon: "ph ph-calendar-blank", held: false, hold: "", badgeColor: "rgba(17,22,27,.55)", badgeBg: "rgba(17,22,27,.04)", badgeBorder: "rgba(17,22,27,.12)", badgeIcon: "ph ph-calendar-blank" };
+  const held = lesson.status === "pending_payment";
   return {
     date: fullDate(lesson.startTime),
     time: `${clock(lesson.startTime)} – ${clock(lesson.endTime)}`,
     loc: lesson.locationLabel,
     locSub: lesson.locationSub,
-    status: lesson.status === "confirmed" ? "Confirmed" : lesson.status.charAt(0).toUpperCase() + lesson.status.slice(1),
+    status: lessonWord(lesson),
     icon: lesson.isZoom ? "ph ph-video-camera" : "ph ph-map-pin",
+    held,
+    hold: holdLine(lesson),
+    badgeColor: held ? "#9C5F22" : "#4A6149",
+    badgeBg: held ? "rgba(194,125,56,.08)" : "rgba(74,97,73,.1)",
+    badgeBorder: held ? "rgba(194,125,56,.35)" : "rgba(74,97,73,.2)",
+    badgeIcon: held ? "ph-fill ph-hourglass" : "ph-fill ph-check-circle",
   };
 }
 
@@ -63,10 +65,16 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const [bkSlot, setBkSlot] = useState<string | null>(null);
   const [slots, setSlots] = useState<SlotsResponse | null>(null);
   const [slotError, setSlotError] = useState("");
-  const [refEmail, setRefEmail] = useState("");
+  const [refCodeInput, setRefCodeInput] = useState("");
   const [pkgStep, setPkgStep] = useState(1);
-  const [pkgChoice, setPkgChoice] = useState<string>(LESSON_PACKAGES[1].id);
+  const [pkgMethod, setPkgMethod] = useState<PackageMethod>("zelle");
+  const [pkgResult, setPkgResult] = useState<{ invoice: InvoiceDTO; instructions: string[]; existing: boolean } | null>(null);
+  const [pkgBusy, setPkgBusy] = useState(false);
   const [repeatWeekly, setRepeatWeekly] = useState(false);
+  const [bkWeeks, setBkWeeks] = useState(SERIES_WEEKS_DEFAULT);
+  const [bkResult, setBkResult] = useState<{ count: number; held: number; hold: string; instructions: string[] } | null>(null);
+  const [slotTick, setSlotTick] = useState(0);
+  const [payInfo, setPayInfo] = useState<{ invoiceId: string; instructions: string[]; error?: string } | null>(null);
 
   const close = useCallback(() => setDialog(null), []);
   const open = useCallback((kind: string, d: any = {}) => {
@@ -123,53 +131,101 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       })
       .catch((e) => live && setSlotError(errorText(e)));
     return () => { live = false; };
-  }, [dialogKind, student?.id, monthBase]);
+  }, [dialogKind, student?.id, monthBase, slotTick]);
 
   const billing = data?.billing ?? null;
   const unpaid = !!billing?.bookingBlocked;
   const paid = !!billing && !billing.bookingBlocked;
   const kidNextLesson = data?.upcoming[0];
+  const policy = data?.policy ?? null;
+  const rescheduleHours = policy?.rescheduleNoticeHours ?? 24;
+  const cancelHours = policy?.cancelNoticeHours ?? 24;
+  const zelleTo = policy?.zelleRecipient || "Zane";
+  const credits = data?.packageLessons ?? 0;
+  const cardOn = !!me?.features?.cardPayments;
+  const hoursUntil = (l: LessonDTO) => (new Date(l.startTime).getTime() - Date.now()) / 36e5;
 
   const openBook = () => {
-    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    if (readOnly) return flash(PREVIEW_OFF);
     setRsLesson(null);
+    setBkResult(null);
     setBkMonth(0);
     setDialog({ kind: "book", data: {} });
     setMenuOpen(false);
   };
   const openRescheduleFlow = () => {
-    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    if (readOnly) return flash(PREVIEW_OFF);
     setRsLesson(null);
     setBkMonth(0);
     setDialog({ kind: "reschedule", data: {} });
     setMenuOpen(false);
   };
   const openReschedule = (lesson?: LessonDTO) => {
-    if (readOnly) return flash("Actions are disabled in teacher preview.");
+    if (readOnly) return flash(PREVIEW_OFF);
     if (!lesson || new Date(lesson.startTime).getTime() <= Date.now()) return flash("That lesson has already happened. Book a new one instead.");
+    if (hoursUntil(lesson) < rescheduleHours) return flash(`Lessons can't be moved within ${rescheduleHours} hours of the start. Please contact Zane.`);
     setRsLesson(lesson);
+    setBkResult(null);
     setRepeatWeekly(false);
+    setBkLoc(lesson.isZoom ? "Zoom" : "Music City SF");
     setBkMonth(0);
     setDialog({ kind: "book", data: {} });
+  };
+  const cancelLesson = async (lesson: LessonDTO) => {
+    if (readOnly) return flash(PREVIEW_OFF);
+    const when = `${fullDate(lesson.startTime)} at ${clock(lesson.startTime)}`;
+    const late = hoursUntil(lesson) < cancelHours;
+    const msg = late
+      ? `This is less than ${cancelHours} hours before the lesson on ${when}. A late cancel still uses the credit or keeps the charge. Cancel anyway?`
+      : `Cancel the lesson on ${when}?`;
+    if (!window.confirm(msg)) return;
+    try {
+      const res = await api<{ late: boolean; refund: "credit" | "invoice_voided" | "none" }>(`/lessons/${lesson.id}/cancel`, { method: "POST", body: {} });
+      close();
+      flash(res.late ? "Lesson cancelled. It was inside the notice window, so it still counts." : res.refund === "credit" ? "Lesson cancelled. The credit is back on your account." : res.refund === "invoice_voided" ? "Lesson cancelled. Its invoice was voided." : "Lesson cancelled.");
+      await load();
+    } catch (e) {
+      flash(errorText(e));
+    }
   };
   const confirmBooking = async () => {
     if (!bkSlot || !student) return flash("Choose a time first.");
     if (booking) return;
     setBooking(true);
     try {
-      const body = { studentId: student.id, startTime: bkSlot, location: bkLoc, repeatWeekly: repeatWeekly && !rsLesson };
-      if (rsLesson) await api(`/lessons/${rsLesson.id}/reschedule`, { method: "POST", body });
-      else await api("/lessons", { method: "POST", body });
-      const booked = rsLesson ? `Lesson moved to ${fullDate(bkSlot)} at ${clock(bkSlot)}.` : repeatWeekly ? `Weekly lessons booked from ${fullDate(bkSlot)} at ${clock(bkSlot)}. Notifications stay off in preview.` : `Lesson booked: ${fullDate(bkSlot)} at ${clock(bkSlot)}.`;
-      flash(booked);
-      close();
-      setRsLesson(null);
+      if (rsLesson) {
+        await api(`/lessons/${rsLesson.id}/reschedule`, { method: "POST", body: { startTime: bkSlot, location: bkLoc } });
+        flash(`Lesson moved to ${fullDate(bkSlot)} at ${clock(bkSlot)}.`);
+        close();
+        setRsLesson(null);
+        await load();
+        return;
+      }
+      const body = { studentId: student.id, startTime: bkSlot, location: bkLoc, ...(repeatWeekly ? { repeatWeekly: true, weeks: bkWeeks } : {}) };
+      const res = await api<{ lessons: LessonDTO[]; invoiceIds: string[]; seriesId: string | null }>("/lessons", { method: "POST", body });
+      const lessons = res.lessons ?? [];
+      const held = lessons.filter((l) => l.status === "pending_payment");
+      if (held.length) {
+        let instructions: string[] = [];
+        const firstInvoice = held[0].invoiceId ?? res.invoiceIds?.[0];
+        if (firstInvoice) {
+          instructions = await api<{ instructions: string[] }>(`/invoices/${firstInvoice}/instructions`).then((r) => r.instructions ?? []).catch(() => []);
+        }
+        setBkResult({ count: lessons.length, held: held.length, hold: holdLine(held[0]), instructions });
+      } else {
+        flash(lessons.length > 1 ? `${lessons.length} weekly lessons booked from ${fullDate(bkSlot)} at ${clock(bkSlot)}.` : `Lesson booked: ${fullDate(bkSlot)} at ${clock(bkSlot)}.`);
+        close();
+      }
       await load();
     } catch (e) {
       flash(errorText(e));
-      if (e instanceof ApiRequestError && e.code === "outstanding_balance") {
+      const code = e instanceof ApiRequestError ? e.code : "";
+      if (code === "outstanding_balance" || code === "unpaid_hold") {
         close();
         await load();
+      } else if (code === "slot_unavailable" || code === "reschedule_closed") {
+        setBkSlot(null);
+        setSlotTick((t) => t + 1);
       }
     } finally {
       setBooking(false);
@@ -183,18 +239,26 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const selected = allInvoices.find((i) => i.id === invoiceId) ?? firstOpen ?? allInvoices[0];
   const selectedOpen = !!selected && billing?.openInvoices.some((i) => i.id === selected.id);
 
-  const payNow = async (e?: any) => {
-    e?.preventDefault?.();
-    if (readOnly) return flash("Actions are disabled in teacher preview.");
-    const target = selectedOpen ? selected : firstOpen;
-    if (!target || paying) return;
-    setPaying(true); // blocks a second request while the first is in flight
+  // Zelle and cash are paid offline: the pay dialog shows the instructions. Card only when card payments are on.
+  const openPay = (inv?: InvoiceDTO) => {
+    if (readOnly) return flash(PREVIEW_OFF);
+    const target = inv ?? (selectedOpen ? selected : firstOpen);
+    if (!target) return flash("There's nothing to pay right now.");
+    setInvoiceId(target.id);
+    open("pay");
+    setPayInfo(null);
+    api<{ instructions: string[] }>(`/invoices/${target.id}/instructions`)
+      .then((r) => setPayInfo({ invoiceId: target.id, instructions: r.instructions ?? [] }))
+      .catch((err) => setPayInfo({ invoiceId: target.id, instructions: [], error: errorText(err) }));
+  };
+  const payByCard = async (target: InvoiceDTO | undefined) => {
+    if (readOnly) return flash(PREVIEW_OFF);
+    if (!cardOn || !target || paying) return;
+    setPaying(true);
     try {
-      const sent = await api<{ suppressed?: boolean }>(`/invoices/${target.id}/send-payment-link`, { method: "POST" });
-      close();
-      flash(sent?.suppressed
-        ? "Safe mode is on, so no email or text was sent. The payment link was only written to the server log."
-        : "Your payment link is on its way to your email. Your balance updates here once the payment clears.");
+      const { url } = await api<{ url: string }>(`/invoices/${target.id}/checkout`, { method: "POST" });
+      if (url && /^https:\/\//i.test(url)) window.location.assign(url);
+      else flash("Card checkout isn't available right now.");
     } catch (err) {
       flash(errorText(err));
     } finally {
@@ -202,23 +266,27 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     }
   };
 
-  const hoursUntilNext = kidNextLesson ? (new Date(kidNextLesson.startTime).getTime() - Date.now()) / 36e5 : 0;
-  const rsAllowed = !!kidNextLesson && hoursUntilNext > 24 && !readOnly && !!data?.canBook;
+  const hoursUntilNext = kidNextLesson ? hoursUntil(kidNextLesson) : 0;
+  const rsAllowed = !!kidNextLesson && hoursUntilNext > rescheduleHours && !readOnly && !!data?.canBook;
   const next = nextView(kidNextLesson);
+  const upcomingOpen = (data?.upcoming ?? []).filter((lesson) => new Date(lesson.startTime).getTime() > Date.now() && (lesson.status === "confirmed" || lesson.status === "pending_payment"));
   const rs = {
     mode: !!rsLesson,
     notMode: !rsLesson,
     allowed: rsAllowed,
-    locked: !!kidNextLesson && hoursUntilNext <= 24,
+    locked: !!kidNextLesson && hoursUntilNext <= rescheduleHours,
     allowedNote: rsAllowed,
-    note: "Free to reschedule until 24 hours before the lesson.",
+    note: `Free to reschedule until ${rescheduleHours} hours before the lesson. Cancel at least ${cancelHours} hours ahead or the lesson still counts.`,
     current: rsLesson ? `${fullDate(rsLesson.startTime)} at ${clock(rsLesson.startTime)}` : "",
     open: () => openReschedule(kidNextLesson),
-    choices: (data?.upcoming ?? []).filter((lesson) => new Date(lesson.startTime).getTime() > Date.now() && lesson.status !== "cancelled").map((lesson) => ({
+    canCancelNext: !!kidNextLesson && !readOnly && !!data?.canBook,
+    cancelNext: () => kidNextLesson && cancelLesson(kidNextLesson),
+    choices: upcomingOpen.map((lesson) => ({
       id: lesson.id,
       date: fullDate(lesson.startTime),
       time: `${clock(lesson.startTime)} – ${clock(lesson.endTime)}`,
       loc: lesson.locationLabel,
+      locked: hoursUntil(lesson) < rescheduleHours,
       pick: () => openReschedule(lesson),
     })),
   };
@@ -236,8 +304,10 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     const note = data?.notes.find((n) => fmtDay(n.lessonDate, { year: "numeric", month: "2-digit", day: "2-digit" }) === day);
     return note;
   };
+  const invoiceNumber = (id?: string | null) => (id ? allInvoices.find((i) => i.id === id)?.number : undefined);
   const history = (data?.history ?? []).map((l) => {
     const note = invoiceLookup(l);
+    const invNo = invoiceNumber(l.invoiceId);
     const cancelled = /cancel|noshow/i.test(l.status);
     const st = cancelled ? "Cancelled" : "Attended";
     return {
@@ -246,7 +316,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       status: st,
       sColor: st === "Attended" ? "#4A6149" : "rgba(17,22,27,.5)",
       note: note ? "View note" : "—",
-      invoice: "—",
+      invoice: invNo ? `#${invNo}` : l.lateCancel ? "Late cancel" : "—",
       open: () => (note ? open("note", { note: { ...note, date: fmtDay(note.lessonDate) } }) : flash("No note was published for this lesson.")),
     };
   });
@@ -296,9 +366,20 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     nextMonth: () => setBkMonth((m) => Math.min(6, m + 1)),
     recurring: repeatWeekly,
     toggleRecurring: () => setRepeatWeekly((on) => !on),
-    confirmLabel: booking ? "Saving…" : rsLesson ? "Confirm new time" : "Confirm lesson",
-    summary: slotError || (bkSlot && student ? `${student.firstName} · ${dayLabel} · ${clock(bkSlot)} · ${bkLoc}` : "Choose a date and time"),
+    weeks: bkWeeks,
+    weekOpts: Array.from({ length: SERIES_WEEKS_MAX - 1 }, (_, i) => i + 2),
+    setWeeks: (e: any) => setBkWeeks(Number(e.target.value) || SERIES_WEEKS_DEFAULT),
+    priceLine: `60-minute lesson · ${SESSION_PRICE}`,
+    creditLine: `${credits} lesson credit${credits === 1 ? "" : "s"} left. ${EACH_LESSON}`,
+    recurringHint: `Books this time every week. ${EACH_LESSON}`,
+    confirmLabel: booking ? "Saving…" : rsLesson ? "Confirm new time" : repeatWeekly ? `Book ${bkWeeks} lessons` : "Confirm lesson",
+    summary: slotError || (bkSlot && student ? `${student.firstName} · ${dayLabel} · ${clock(bkSlot)} · ${bkLoc}${repeatWeekly && !rsLesson ? ` · weekly × ${bkWeeks}` : ""}` : "Choose a date and time"),
     confirm: confirmBooking,
+    result: bkResult,
+    resultTitle: bkResult ? `${bkResult.count} lesson${bkResult.count === 1 ? "" : "s"} booked` : "",
+    resultLine: bkResult ? `${bkResult.held === bkResult.count ? (bkResult.count === 1 ? "It is" : "They are") : `${bkResult.held} of them ${bkResult.held === 1 ? "is" : "are"}`} held until payment${bkResult.hold ? ` (${bkResult.hold.replace(/^Held until /, "until ")})` : ""}. Unpaid holds are released after that.` : "",
+    resultNote: EACH_LESSON,
+    resultSteps: bkResult?.instructions.length ? bkResult.instructions : [`Send ${SESSION_PRICE} per lesson by Zelle to ${zelleTo}, or pay cash at the studio.`],
   };
 
   const invView = selected
@@ -308,19 +389,26 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
         status: statusWord[selected.status] ?? selected.status,
         color: selected.status === "paid" ? "#4A6149" : "#9C5F22",
         total: money(selected.total),
+        amountDue: money(selected.amountDue),
+        number: selected.number,
+        method: selected.paymentMethod ? METHOD_LABEL[selected.paymentMethod] : "",
+        open: !!selectedOpen,
         lines: selected.lines.map((l) => ({ label: l.label, amount: money(l.amount) })),
       }
-    : { issued: "—", due: "—", status: "No invoices yet", color: "rgba(17,22,27,.5)", total: "$0.00", lines: [] };
+    : { issued: "—", due: "—", status: "No invoices yet", color: "rgba(17,22,27,.5)", total: "$0.00", amountDue: "$0.00", number: "", method: "", open: false, lines: [] };
 
   const overdueDays = firstOpen?.dueDate ? Math.floor((Date.now() - new Date(firstOpen.dueDate).getTime()) / 864e5) : 0;
+  const owed = !!billing && !loading && (billing.outstanding > 0 || billing.openInvoices.length > 0 || billing.bookingBlocked);
   const bal = {
     unavailable: !billing && !loading,
+    owed,
+    clear: !!billing && !loading && !owed,
     amount: money(billing?.outstanding ?? 0),
     number: firstOpen?.number ?? "",
     items: firstOpen?.lines.map((l) => l.label).join(", ") || firstOpen?.title || "",
     due: fmtDay(firstOpen?.dueDate, { month: "long", day: "numeric", year: "numeric" }),
     statusLabel: firstOpen ? statusWord[firstOpen.status] ?? firstOpen.status : "",
-    statusLine: overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Due now",
+    statusLine: overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Awaiting payment",
     hasLast: !!lastPaid,
     lastAmount: lastPaid ? money(lastPaid.amountPaid || lastPaid.total) : "",
     lastDate: fmtDay(lastPaid?.issueDate),
@@ -362,27 +450,34 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const d = dialog, dk = d?.kind ?? "", dd = d?.data ?? {};
   const dv = dd.video ? { id: dd.video.id, title: dd.video.title, cat: dd.video.category, desc: dd.video.description, dur: dd.video.durationLabel, assigned: fmt(dd.video.assignedAt, { month: "short", day: "numeric" }), watchedMarked: !readOnly } : {};
   const dn = dd.note ?? {};
-  const dlgTitles: any = { enroll2fa: "Security", autopay: "Set up auto-pay", reschedule: "Move a lesson", book: rsLesson ? "Reschedule your lesson" : "Book a lesson with Zane", pay: `Pay invoice #${firstOpen?.number ?? ""}`, invoice: selected ? `Invoice #${selected.number}` : "Invoices", schedule: `${firstName}'s upcoming lessons`, video: dv.title, note: `${dn.date ?? ""} — ${firstName}`, family: acctMe?.isFamily ? "Family & profile" : "Profile", recovery: "Recovery codes", packages: pkgStep === 2 ? "Review and pay" : "Buy a lesson package" };
-  const dlgKickers: any = { enroll2fa: "Security", autopay: "Recurring payments", reschedule: "Scheduling", book: "Scheduling", pay: "Secure payment", invoice: "Billing", schedule: "Schedule", video: dv.cat, note: "Teacher note", family: acct.label, recovery: "Security", packages: "Lesson packages" };
-  const dlg: any = { open: !!d, width: dk === "book" ? "860px" : dk === "note" ? "640px" : dk === "packages" ? "560px" : "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["book", "reschedule", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "autopay", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
+  const dlgTitles: any = { enroll2fa: "Security", reschedule: "Move a lesson", book: rsLesson ? "Reschedule your lesson" : bkResult ? "Lesson booked" : "Book a lesson with Zane", pay: `Pay invoice #${selected?.number ?? ""}`, invoice: selected ? `Invoice #${selected.number}` : "Invoices", schedule: `${firstName}'s upcoming lessons`, video: dv.title, note: `${dn.date ?? ""} — ${firstName}`, family: acctMe?.isFamily ? "Family & profile" : "Profile", recovery: "Recovery codes", packages: pkgStep === 3 ? "Invoice requested" : pkgStep === 2 ? "Review" : `Buy a ${PACKAGE_LESSONS}-lesson package` };
+  const dlgKickers: any = { enroll2fa: "Security", reschedule: "Scheduling", book: "Scheduling", pay: "Payment", invoice: "Billing", schedule: "Schedule", video: dv.cat, note: "Teacher note", family: acct.label, recovery: "Security", packages: "Lesson package" };
+  const dlg: any = { open: !!d, width: dk === "book" && !bkResult ? "860px" : dk === "note" ? "640px" : dk === "packages" ? "560px" : "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
+  ["book", "reschedule", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "enroll2fa", "migrate"].forEach((k) => { dlg[k] = dk === k; });
 
-  const features = me?.features;
-  const autopayOn = !!data?.autopayEnabled;
-  const ap = {
-    on: autopayOn, off: !autopayOn, status: autopayOn ? "Saved" : "Off", color: autopayOn ? "#4A6149" : "rgba(17,22,27,.45)", btn: autopayOn ? "Turn off" : "Turn on",
-    line: autopayOn ? "Preference saved for preview. No card was charged." : "Save autopay for preview. No card is charged.",
-    schedule: "your lessons", nextCharge: "your next lesson",
-    intro: "Preview saves this choice only. Stripe test mode is logged, and no payment method is charged.",
-  };
-  const selectedPackage = packageCard(pkgChoice);
-  const sched = (data?.upcoming ?? []).map((l, i) => ({
-    date: fmt(l.startTime, { weekday: "short", month: "short", day: "numeric" }),
-    time: `${clock(l.startTime)} – ${clock(l.endTime)}`,
-    loc: l.locationLabel,
-    status: i === 0 && unpaid ? "Unpaid" : "Booked",
-    color: i === 0 && unpaid ? "#9C5F22" : "#1D2A44",
-  }));
+  const methods: PackageMethod[] = cardOn ? ["zelle", "cash", "card"] : ["zelle", "cash"];
+  const method = methods.includes(pkgMethod) ? pkgMethod : "zelle";
+  const methodPrice = (m: PackageMethod) => formatMoney(PACKAGE_PRICE_CENTS[m]);
+  const sched = upcomingOpen.map((l) => {
+    const held = l.status === "pending_payment";
+    return {
+      id: l.id,
+      date: fmt(l.startTime, { weekday: "short", month: "short", day: "numeric" }),
+      time: `${clock(l.startTime)} – ${clock(l.endTime)}`,
+      loc: l.locationLabel,
+      status: held ? "Awaiting payment" : "Booked",
+      color: held ? "#9C5F22" : "#1D2A44",
+      hold: holdLine(l),
+      canAct: !readOnly && !!data?.canBook,
+      move: () => openReschedule(l),
+      moveLocked: hoursUntil(l) < rescheduleHours,
+      cancel: () => cancelLesson(l),
+      late: hoursUntil(l) < cancelHours,
+    };
+  });
+  const refs = data?.referrals ?? null;
+  const refCode = refs?.code ?? "";
+  const cents = (n: number) => formatMoney(n);
 
   return {
     is: { student: true, twofa: false, settings: false },
@@ -399,81 +494,107 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     showWatched: true,
     ...sec,
     tfa: { ...sec.tfa, banner: !sec.tfa.on && !readOnly && !loading },
-    ob, rs, bk, ap, dlg, dv, dn, inv: invView, sched, form, familyRows,
+    ob, rs, bk, dlg, dv, dn, inv: invView, sched, form, familyRows,
+    schedNote: `Moves are free until ${rescheduleHours} hours before a lesson. Cancelling within ${cancelHours} hours still uses the credit or keeps the charge.`,
     hasLessonCal: false, noLessonCal: true, lessonCalUrl: "",
     invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: statusWord[i.status] ?? i.status, on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
     paymentUnavailable: !loading && !billing,
     // Each recorded payment, newest first, from Supabase.
     paymentHistory: (billing?.payments ?? []).map((p) => ({ id: p.id, number: p.invoiceNumber, date: fmtDay(p.paidAt.slice(0, 10)), amount: money(p.amount), status: "Paid" })),
-    referralCode: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "",
+    referralCode: refCode,
     f: Object.fromEntries(["title", "desc", "cat", "url", "code", "email"].map((k) => [k, (e: any) => setForm((s: any) => ({ ...s, [k]: e.target.value }))])),
-    openBook, openReschedule: openRescheduleFlow, openPay: () => open("pay"), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
-    openAutopay: () => open("autopay"), openRecovery: () => open("recovery"),
+    openBook, openReschedule: openRescheduleFlow, openPay: () => openPay(), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
+    openRecovery: () => open("recovery"),
     closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
-    payUrl: selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? selected.payUrl : "",
-    payNote: !billing ? "" : billing.paymentsOpen === false ? "The portal doesn't take payments yet. Please pay Zane directly; your balance updates once it's recorded." : (selected?.payUrl && /^https:\/\//i.test(selected.payUrl) ? "" : "This invoice doesn't include a payment link yet."),
-    payNow, autopayUrl: "#",
-    enableAutopay: (e: any) => {
-      e?.preventDefault?.();
-      if (readOnly) return flash("Actions are disabled in teacher preview.");
-      if (!student) return;
-      void api<{ checkoutUrl?: string | null }>("/autopay", { method: "POST", body: { studentId: student.id, enabled: !autopayOn } })
-        .then((res) => {
-          if (res.checkoutUrl) {
-            window.location.assign(res.checkoutUrl);
-            return;
-          }
-          flash(autopayOn ? "Autopay preference cleared. Nothing was charged." : "Autopay preference saved. Nothing was charged.");
-          return load();
-        })
-        .catch((err) => flash(errorText(err)));
+    pay: {
+      loading: !payInfo,
+      steps: payInfo?.instructions ?? [],
+      error: payInfo?.error ?? "",
+      fallback: `Send ${selected ? money(selected.amountDue) : "the amount due"} by Zelle to ${zelleTo}, or pay cash at your next lesson.`,
+      card: cardOn,
+      cardLabel: paying ? "Opening…" : `Pay ${selected ? money(selected.amountDue) : ""} by card`,
+      payCard: () => payByCard(selectedOpen ? selected : firstOpen),
+      note: "Your balance updates once Zane marks the payment received.",
     },
-    disableAutopay: () => {
-      if (!student || readOnly) return close();
-      void api("/autopay", { method: "POST", body: { studentId: student.id, enabled: false } }).then(() => load()).finally(close);
-    },
-    downloadInvoice: () => flash("Invoice PDFs are available from your emailed invoice for now."),
-    pkgLive: !!features?.packages, pkgSoon: false, pkgBtnLabel: "Buy a package",
-    pkgCreditLine: `${data?.packageLessons ?? 0} lesson credits.`,
-    openPackages: () => { setPkgStep(1); open("packages"); },
+    payThis: () => openPay(selectedOpen ? selected : firstOpen),
+    downloadInvoice: () => flash("Invoice PDFs aren't available yet. Ask Zane if you need a copy."),
+    pkgLive: true, pkgSoon: false, pkgBtnLabel: "Buy a package",
+    credits,
+    pkgCreditLine: `${credits} lesson credit${credits === 1 ? "" : "s"} left`,
+    openPackages: () => { if (readOnly) return flash(PREVIEW_OFF); setPkgStep(1); setPkgResult(null); open("packages"); },
     pkg: {
-      step1: pkgStep === 1, step2: pkgStep === 2, step3: pkgStep === 3, sel: selectedPackage, targetLabel: student?.fullName ?? acct.label,
+      step1: pkgStep === 1, step2: pkgStep === 2, step3: pkgStep === 3,
+      sel: { method, label: METHOD_LABEL[method], price: methodPrice(method), lessons: PACKAGE_LESSONS },
+      targetLabel: student?.fullName ?? acct.label,
+      isCard: method === "card",
+      payLabel: pkgBusy ? "Saving…" : method === "card" ? `Pay ${methodPrice(method)} by card` : "Request invoice",
+      intro: `${PACKAGE_LESSONS} × 60-minute lessons. Credits are added once the payment is received.`,
+      steps: pkgResult?.instructions ?? [],
+      existing: !!pkgResult?.existing,
+      invoiceNumber: pkgResult?.invoice.number ?? "",
+      doneLine: method === "cash"
+        ? `${PACKAGE_LESSONS} credits are added for ${student?.firstName ?? "your student"} once Zane receives the cash and marks it paid.`
+        : `${PACKAGE_LESSONS} credits are added for ${student?.firstName ?? "your student"} once Zane receives the Zelle payment and marks it paid.`,
       next: () => setPkgStep(2), back: () => setPkgStep(1),
-      pay: () => {
-        if (readOnly) return flash("Actions are disabled in teacher preview.");
-        if (!student) return;
-        void api<{ lessonsRemaining: number }>("/packages/purchase", { method: "POST", body: { studentId: student.id, packageId: selectedPackage.id } })
-          .then((res) => { setPkgStep(3); flash(`Logged only. ${res.lessonsRemaining} lesson credits are on the account. Nothing was charged.`); return load(); })
-          .catch((err) => flash(errorText(err)));
+      pay: async () => {
+        if (readOnly) return flash(PREVIEW_OFF);
+        if (!student || pkgBusy) return;
+        setPkgBusy(true);
+        try {
+          const res = await api<{ invoice: InvoiceDTO; existing: boolean; instructions: string[] }>("/packages/purchase", { method: "POST", body: { studentId: student.id, method } });
+          if (method === "card") {
+            const { url } = await api<{ url: string }>(`/invoices/${res.invoice.id}/checkout`, { method: "POST" });
+            if (url && /^https:\/\//i.test(url)) return window.location.assign(url);
+            throw new Error("Card checkout isn't available right now.");
+          }
+          setPkgResult({ invoice: res.invoice, instructions: res.instructions ?? [], existing: !!res.existing });
+          setPkgStep(3);
+          await load();
+        } catch (err) {
+          flash(errorText(err));
+        } finally {
+          setPkgBusy(false);
+        }
       },
     },
-    pkgCards: LESSON_PACKAGES.map((item) => packageCard(item.id)).map((p) => ({
-      ...p,
-      on: p.id === pkgChoice,
-      pick: () => setPkgChoice(p.id),
-      bg: p.id === pkgChoice ? "rgba(29,42,68,.05)" : p.popular ? "rgba(224,163,99,.16)" : "#fff",
-      border: p.id === pkgChoice ? "#1D2A44" : p.popular ? "#E0A363" : "rgba(17,22,27,.12)",
+    pkgCards: methods.map((m) => ({
+      id: m, name: METHOD_LABEL[m], price: methodPrice(m), per: m === "cash" ? "Paid in person before the first lesson" : m === "zelle" ? `Sent to ${zelleTo}` : "Secure card checkout",
+      on: m === method, pick: () => setPkgMethod(m),
+      bg: m === method ? "rgba(29,42,68,.05)" : "#fff",
+      border: m === method ? "#1D2A44" : "rgba(17,22,27,.12)",
     })),
-    pkgTargets: [],
     ref: {
-      inactive: false, notice: refNotice, code: student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : "SFTM-PORTAL", rows: [], empty: true, earned: "$0", hasCredit: false, credit: "$0", email: refEmail,
-      setEmail: (e: any) => setRefEmail(e.target.value),
-      copyCode: () => { const code = student ? `SFTM-${student.id.replace(/-/g, "").slice(0, 8).toUpperCase()}` : ""; copy(code); flash("Referral code copied."); },
-      copyLink: () => { copy(`${window.location.origin}/invite`); flash("Portal link copied."); },
-      send: () => {
-        if (readOnly) return flash("Actions are disabled in teacher preview.");
-        if (!student || !refEmail.trim()) return flash("Enter an email address.");
-        void api<{ allowlisted: boolean; emailed: boolean }>("/referrals/invite", { method: "POST", body: { email: refEmail.trim(), studentId: student.id } })
-          .then((res) => {
-            const notice = res.emailed
-              ? `Referral email sent to ${refEmail}.`
-              : res.allowlisted
-                ? "The referral was logged, not emailed. SMTP isn't set on this preview yet."
-                : "The referral was logged. Safe mode only emails the allowlist.";
-            setRefNotice(notice);
-            flash(notice);
-          })
-          .catch((err) => flash(errorText(err)));
+      unavailable: !refs && !loading,
+      ready: !!refs,
+      code: refCode,
+      total: refs?.totalReferred ?? 0,
+      pending: (refs?.pending ?? []).map((r) => ({ name: r.name, meta: `Signed up ${fmtDay(r.since, { month: "short", day: "numeric", year: "numeric" })} · first lesson not paid yet` })),
+      completed: (refs?.completed ?? []).map((r) => ({ name: r.name, meta: `Paid ${fmtDay(r.completedAt, { month: "short", day: "numeric", year: "numeric" })} · ${cents(REFERRER_CREDIT_CENTS)} credit` })),
+      empty: !!refs && !refs.pending.length && !refs.completed.length,
+      earned: cents(refs?.creditsEarnedCents ?? 0),
+      used: cents(refs?.creditsUsedCents ?? 0),
+      available: cents(refs?.creditsAvailableCents ?? 0),
+      hasCredit: (refs?.creditsAvailableCents ?? 0) > 0,
+      credit: cents(refs?.creditsAvailableCents ?? 0),
+      offer: `Your friend gets ${cents(REFERRAL_DISCOUNT_CENTS)} off their first invoice. When they pay it, you get a ${cents(REFERRER_CREDIT_CENTS)} credit.`,
+      referredLine: refs?.referredBy ? `You joined with code ${refs.referredBy.code}.${refs.referredBy.discountPending ? ` ${cents(REFERRAL_DISCOUNT_CENTS)} comes off your first invoice.` : ""}` : "",
+      canApply: !!refs && !refs.referredBy && allInvoices.length === 0 && !readOnly && !!data?.canPay,
+      applyCode: refCodeInput,
+      setApplyCode: (e: any) => setRefCodeInput(e.target.value),
+      notice: refNotice,
+      copyCode: () => { if (!refCode) return; copy(refCode); flash("Referral code copied."); },
+      apply: async () => {
+        if (readOnly) return flash(PREVIEW_OFF);
+        const code = refCodeInput.trim();
+        if (!student || code.length < 4) return flash("Enter the code your friend gave you.");
+        try {
+          await api("/referrals/apply", { method: "POST", body: { studentId: student.id, code } });
+          setRefCodeInput("");
+          setRefNotice(`Code applied. ${cents(REFERRAL_DISCOUNT_CENTS)} comes off your first invoice.`);
+          await load();
+        } catch (err) {
+          flash(errorText(err));
+        }
       },
     },
     viewAs: readOnly,

@@ -106,10 +106,15 @@ describe("family boundaries", () => {
   });
 });
 
-describe("financial features stay off", () => {
-  it.each(["/api/packages/purchase", "/api/autopay", "/api/referrals/invite", "/api/referrals/apply"])("%s is not enabled", async (path) => {
+describe("financial features stay narrow", () => {
+  it.each(["/api/autopay", "/api/referrals/invite"])("%s no longer exists (no autopay, no referral email)", async (path) => {
     const res = await request(createApp(buildDeps({ parent }))).post(path).set("Authorization", "Bearer parent").send({});
-    expect(res.status).toBe(501);
+    expect(res.status).toBe(404);
+  });
+
+  it.each(["/api/packages/purchase", "/api/referrals/apply"])("%s validates its input", async (path) => {
+    const res = await request(createApp(buildDeps({ parent }))).post(path).set("Authorization", "Bearer parent").send({});
+    expect(res.status).toBe(400);
   });
 
   it("a family can't mark an invoice paid, and the teacher route rejects a bad id", async () => {
