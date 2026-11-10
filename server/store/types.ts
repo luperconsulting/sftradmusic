@@ -89,6 +89,8 @@ export interface StudioSettings {
   rescheduleNoticeHours: number;
   cancelNoticeHours: number;
   zelleRecipient: string;
+  /** Optional Zelle QR image as a data URL. Served only to payers linked to an invoice. */
+  zelleQrDataUrl: string | null;
   timezone: string;
 }
 
@@ -172,7 +174,23 @@ export interface PaymentRecord {
   reference: string;
 }
 
-export type PaymentMethod = "zelle" | "cash" | "card" | "manual" | "check" | "bank_transfer" | "other";
+/** Generic lowercase method name ("zelle", "cash", "card", ... "venmo" later) so new methods need no schema change. */
+export type PaymentMethod = string;
+
+export interface PaymentReportRecord {
+  id: string;
+  invoiceId: string;
+  studentId: string;
+  reportedByAccountId: string;
+  method: string;
+  amountCents: number | null;
+  note: string;
+  status: "pending" | "confirmed" | "not_received";
+  reviewedByAccountId: string | null;
+  reviewedAt: string | null;
+  paymentId: string | null;
+  createdAt: string;
+}
 
 export interface InvitationRecord {
   id: string;
@@ -267,6 +285,14 @@ export interface PortalStore {
   createReferralCredit(input: { referralId: string; studentId: string; amountCents: number }): Promise<boolean>;
   listReferralCredits(studentIds: string[]): Promise<ReferralCreditRecord[]>;
   setReferralCreditUsed(id: string, invoiceId: string | null): Promise<void>;
+
+  /** Null when the invoice already has a pending report (one open report per invoice). */
+  createPaymentReport(input: { invoiceId: string; studentId: string; reportedByAccountId: string; method: string; amountCents: number | null; note: string }): Promise<PaymentReportRecord | null>;
+  getPaymentReport(id: string): Promise<PaymentReportRecord | null>;
+  listPaymentReports(query: { studentIds?: string[]; invoiceIds?: string[]; status?: PaymentReportRecord["status"] }): Promise<PaymentReportRecord[]>;
+  /** Closes a pending report. False when it was already reviewed (so two clicks can't both act). */
+  reviewPaymentReport(id: string, input: { status: "confirmed" | "not_received"; reviewedByAccountId: string; paymentId: string | null }): Promise<boolean>;
+  setPaymentReportPayment(id: string, paymentId: string): Promise<void>;
 
   setInvoiceStripeSession(invoiceId: string, sessionId: string): Promise<void>;
   /** False when this Stripe event was already handled. */

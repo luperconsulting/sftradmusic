@@ -1,6 +1,7 @@
 // DEVELOPMENT ONLY, and loaded only when DEMO_MODE is true (never in a production build).
 // Everything here is invented sample data so the screens can be reviewed without live services.
-import type { DashboardResponse, InvoiceDTO, LessonDTO, MeResponse, ReferralPanelDTO, StudioPolicyDTO, TeacherStudentRow } from "../../../shared/portal-types";
+import { invoiceMemo, type DashboardResponse, type InvoiceDTO, type LessonDTO, type MeResponse, type PaymentReportDTO, type ReferralPanelDTO, type StudioPolicyDTO, type TeacherPaymentReportDTO, type TeacherStudentRow, type ZelleDetailsDTO } from "../../../shared/portal-types";
+import { ApiRequestError } from "../api/client";
 
 const iso = (days: number, h = 16) => { const d = new Date(); d.setDate(d.getDate() + days); d.setHours(h, 30, 0, 0); return d.toISOString(); };
 const day = (days: number) => iso(days).slice(0, 10);
@@ -16,7 +17,14 @@ const invoice = (id: string, number: string, status: any, kind: "package" | "ses
 const policy: StudioPolicyDTO = { zelleRecipient: "zelle@example.com", holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24 };
 const referrals = (): ReferralPanelDTO => ({ code: "SAMPLE25", totalReferred: 2, pending: [{ name: "Friend One", since: day(-5) }], completed: [{ name: "Friend Two", completedAt: day(-20) }], creditsEarnedCents: 2500, creditsUsedCents: 0, creditsAvailableCents: 2500, referredBy: null });
 const instructions = (inv: InvoiceDTO) => inv.paymentMethod === "cash" ? [`Bring $${inv.amountDue} in cash to your next lesson.`, "Zane marks it paid when he receives it."] : [`Send $${inv.amountDue} by Zelle to ${policy.zelleRecipient}.`, `Put invoice #${inv.number} in the memo.`, "Zane marks it paid when it arrives."];
-let studio = { settings: { holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: policy.zelleRecipient, timezone: "America/Los_Angeles" }, hours: [{ weekday: 2, startMinute: 900, endMinute: 1140 }, { weekday: 4, startMinute: 900, endMinute: 1140 }, { weekday: 6, startMinute: 600, endMinute: 780 }] };
+let studio = { settings: { holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: policy.zelleRecipient, zelleQrDataUrl: null as string | null, timezone: "America/Los_Angeles" }, hours: [{ weekday: 2, startMinute: 900, endMinute: 1140 }, { weekday: 4, startMinute: 900, endMinute: 1140 }, { weekday: 6, startMinute: 600, endMinute: 780 }] };
+
+// "I've sent it" reports by invoice id. One sample report is already waiting for the teacher.
+const reports: Record<string, TeacherPaymentReportDTO> = {
+  i4: { id: "pr1", invoiceId: "i4", method: "zelle", amount: 100, note: "Sent from Arzo's account.", status: "pending", reportedAt: iso(-1, 19), reviewedAt: null, studentId: A, studentName: "Arzo Luper", invoiceNumber: "2004", memo: invoiceMemo("2004"), amountDue: 100, reportedBy: "luperdev@gmail.com" },
+};
+const reportOf = (id: string): PaymentReportDTO | null => { const r = reports[id]; if (!r) return null; const { studentId: _s, studentName: _n, invoiceNumber: _i, memo: _m, amountDue: _a, reportedBy: _b, ...rest } = r; return rest; };
+const withReport = (inv: InvoiceDTO): InvoiceDTO => ({ ...inv, paymentReport: reportOf(inv.id) });
 
 const scenario = () => new URLSearchParams(window.location.search).get("demo") ?? "";
 const isTeacherPath = () => window.location.pathname.startsWith("/teacher") || !!new URLSearchParams(window.location.search).get("preview");
@@ -25,7 +33,7 @@ function dashboard(): DashboardResponse {
   const s = [student(A, "Sample", "Student"), student(B, "Example", "Student")];
   const unpaid = scenario() === "unpaid";
   if (scenario() === "new") return { students: [s[0]], student: s[0], upcoming: [lesson("l1", 6)], history: [], notes: [], videos: [], assignments: [], packageLessons: 0, policy, referrals: { ...referrals(), totalReferred: 0, pending: [], completed: [], creditsEarnedCents: 0, creditsAvailableCents: 0 }, billing: { outstanding: 0, openInvoices: [], history: [], bookingBlocked: false, paymentsOpen: true, payments: [] }, lessonsAvailable: true, canBook: true, canPay: true, readOnly: false };
-  const open = unpaid ? [invoice("i4", "2004", "sent", "session", "zelle", -1)] : [invoice("i3", "2003", "sent", "package", "zelle", 5)];
+  const open = (unpaid ? [invoice("i4", "2004", "sent", "session", "zelle", -1)] : [invoice("i3", "2003", "sent", "package", "zelle", 5)]).map(withReport);
   const paid = [invoice("i1", "2001", "paid", "package", "cash", -30)];
   return {
     students: s, student: s[0],
@@ -81,7 +89,14 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/overview") return { studentCount: 3, adultCount: 1, recentNotes: [{ ...note("n0", -1, "Sample draft note", "draft"), studentName: "Sample Student" }], recentVideos: [{ title: "Sample Video: Bowing", to: "Sample", assignedAt: iso(-3) }], invitations: [] };
   if (p === "/teacher/calendar") return { events: [2, 3, 5].map((d, i) => ({ id: `e${i}`, startTime: new Date(new Date(Number(new URLSearchParams(path.split("?")[1]).get("from"))).getTime() + (d * 24 + 16) * 36e5).toISOString(), endTime: "", title: "Lesson", address: i === 1 ? "Zoom" : "Music City SF", status: i === 2 ? "pending_payment" : "confirmed", holdExpiresAt: i === 2 ? iso(1, 12) : null, studentId: A, studentName: "Sample Student" })) };
   if (p === "/teacher/invoices" && opts.method === "POST") return { invoice: invoice("i9", "2009", "sent", "session") };
-  if (p === "/teacher/invoices") return { invoices: [invoice("i3", "2003", "sent", "package", "zelle", 5), invoice("i4", "2004", "sent", "session", "zelle", -1), invoice("i1", "2001", "paid", "package", "cash", -30), invoice("i5", "2005", "draft", "session", "cash", 3)], total: 4 };
+  if (p === "/teacher/invoices") return { invoices: [invoice("i3", "2003", "sent", "package", "zelle", 5), invoice("i4", "2004", "sent", "session", "zelle", -1), invoice("i1", "2001", "paid", "package", "cash", -30), invoice("i5", "2005", "draft", "session", "cash", 3)].map(withReport), total: 4 };
+  if (p === "/teacher/payment-reports") { const all = new URLSearchParams(path.split("?")[1] ?? "").get("status") === "all"; return { reports: Object.values(reports).filter((r) => all || r.status === "pending") }; }
+  const review = p.match(/^\/teacher\/payment-reports\/([^/]+)\/(confirm|not-received)$/);
+  if (review && opts.method === "POST") { const r = Object.values(reports).find((x) => x.id === review[1]); if (!r) throw new ApiRequestError(404, "not_found", "That report wasn't found."); r.status = review[2] === "confirm" ? "confirmed" : "not_received"; r.reviewedAt = new Date().toISOString(); return { report: r, invoice: invoice(r.invoiceId, r.invoiceNumber, review[2] === "confirm" ? "paid" : "sent", "session"), ...(review[2] === "confirm" ? { payment: { id: "p9", invoiceId: r.invoiceId, invoiceNumber: r.invoiceNumber, amount: r.amount ?? r.amountDue, method: "zelle", status: "succeeded", paidAt: new Date().toISOString() } } : {}) }; }
+  const zel = p.match(/^\/invoices\/([^/]+)\/zelle$/);
+  if (zel) { const id = zel[1]; const inv = invoice(id, id === "i3" ? "2003" : "2004", "sent", id === "i3" ? "package" : "session"); const base = { amountDue: inv.amountDue, memo: invoiceMemo(inv.number), report: reportOf(id) }; const d: ZelleDetailsDTO = scenario() === "nozelle" ? { available: false, message: "Ask your teacher how to pay.", ...base } : { available: true, recipient: "luperdev+zelle@gmail.com", qrDataUrl: studio.settings.zelleQrDataUrl, ...base }; return d; }
+  const rep = p.match(/^\/invoices\/([^/]+)\/payment-reports$/);
+  if (rep && opts.method === "POST") { const id = rep[1]; if (reports[id]?.status === "pending") throw new ApiRequestError(409, "report_pending", "A payment is already reported for this invoice."); const b = (opts.body ?? {}) as { amount?: number; note?: string }; const number = id === "i3" ? "2003" : "2004"; const due = id === "i3" ? 380 : 100; reports[id] = { id: `pr-${id}`, invoiceId: id, method: "zelle", amount: b.amount ?? null, note: b.note ?? "", status: "pending", reportedAt: new Date().toISOString(), reviewedAt: null, studentId: A, studentName: "Arzo Luper", invoiceNumber: number, memo: invoiceMemo(number), amountDue: due, reportedBy: "luperdev@gmail.com" }; return { report: reportOf(id) }; }
   if (/^\/teacher\/invoices\/[^/]+\/(mark-paid|void|send|remind)$/.test(p) && opts.method === "POST") return { ok: true, suppressed: p.endsWith("/remind") };
   if (p === "/packages/purchase" && opts.method === "POST") { const m = (opts.body as any)?.method === "cash" ? "cash" : "zelle"; const inv = invoice("i8", "2008", "sent", "package", m, 7); return { invoice: inv, existing: false, instructions: instructions(inv), creditsAdded: 0 }; }
   const inst = p.match(/^\/invoices\/([^/]+)\/instructions$/);

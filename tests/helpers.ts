@@ -43,7 +43,7 @@ export function fixtureTables(): CoreTables {
       { id: PAYER_B, fullName: "Arzo Luper", email: GUARDIAN_EMAIL, guardianId: "g1" },
     ],
     lessons: [], bookings: [], invoices: [], payments: [],
-    settings: {}, hours: {}, series: [], ledger: [], referralCodes: [], referrals: [], referralCredits: [], stripeEvents: [],
+    settings: {}, hours: {}, series: [], ledger: [], referralCodes: [], referrals: [], referralCredits: [], stripeEvents: [], paymentReports: [],
   };
 }
 

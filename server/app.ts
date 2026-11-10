@@ -10,10 +10,11 @@ import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, 
 import { createStripeCheckout, type CheckoutClient } from "./integrations/stripeCheckout.js";
 import { createGoogleCalendar, type GoogleBusyClient } from "./integrations/googleCalendar.js";
 import { createMailer, type Mailer } from "./mail/mailer.js";
-import { buyPackage, createManualInvoice, getStudentBilling, isOutstanding, issueDraft, markInvoicePaid, markPaidSchema, newInvoiceSchema, packageSchema, paymentSchema, recordPartPayment, toInvoiceDTO, voidInvoice, amountDueCents } from "./services/billing.js";
+import { invoicesWithReports, buyPackage, createManualInvoice, getStudentBilling, isOutstanding, issueDraft, markInvoicePaid, markPaidSchema, newInvoiceSchema, packageSchema, paymentSchema, recordPartPayment, toInvoiceDTO, voidInvoice, amountDueCents } from "./services/billing.js";
 import { assertCanBookNew, bookLessons, cancelLesson, LESSON_STEP_MINUTES, lessonSlots, portalBookingSchema, releaseExpiredHolds, rescheduleLesson, rescheduleSchema, splitLessons, teacherLessonSchema, toLessonDTO, weeksFor } from "./services/lessons.js";
 import { applyReferralCode, ensureReferralCode, referralPanel } from "./services/referrals.js";
 import { opsSummary } from "./services/ops.js";
+import { confirmReport, confirmSchema, rejectReport, reportPayment, reportSchema, teacherReportList, zelleDetails } from "./services/paymentReports.js";
 import { bookingDate, BOOKING_TIMEZONE, startOfBookingDate } from "./services/availability.js";
 import type { PortalContext } from "./services/context.js";
 import { paymentInstructions } from "./services/notify.js";
@@ -410,7 +411,8 @@ export function createApp(deps: Deps) {
       }).catch(soft("lessons")),
       getStudentBilling(store, student.id, config.features.cardPayments).then((b) => { billing = b; }).catch(soft("billing")),
       store.creditBalances([student.id]).then((c) => { credits = c[student.id] ?? 0; }).catch(soft("credits")),
-      policyFor(student).then((p) => { policy = p; }).catch(soft("policy")),
+      // The Zelle recipient isn't secret, but only payers (and the teacher) for this student receive it.
+      policyFor(student).then((p) => { policy = p && !(isTeacher || canPayFor(actor, student.id)) ? { ...p, zelleRecipient: "" } : p; }).catch(soft("policy")),
       referralPanel(store, student.id).then((r) => { referrals = r; }).catch(soft("referrals")),
     ]);
     const body: DashboardResponse = {
@@ -504,6 +506,25 @@ export function createApp(deps: Deps) {
     const policy = student ? await policyFor(student) : null;
     return { invoice: toInvoiceDTO(invoice), instructions: paymentInstructions(invoice, { zelleRecipient: policy?.zelleRecipient ?? "" }), zelleRecipient: policy?.zelleRecipient ?? "", cardPayments: config.features.cardPayments };
   }));
+  // Pay with Zelle: details for a payer linked to this invoice. A blank teacher recipient hides Zelle.
+  app.get("/api/invoices/:invoiceId/zelle", authenticate(), wrap(async (req) => {
+    const invoice = await loadPayableInvoice(req);
+    const student = await needStore().store.getStudent(invoice.studentId);
+    if (!student) throw notFound();
+    return zelleDetails(needStore().store, invoice, student);
+  }));
+
+  // "I've sent it": a pending report. It never marks the invoice paid; the teacher confirms it.
+  app.post("/api/invoices/:invoiceId/payment-reports", authenticate(), wrap(async (req) => {
+    const actor = actorOf(req);
+    limiter.hit(`report:${actor.accountId}`, 10, 60 * 60000);
+    const input = parse(reportSchema, req.body ?? {});
+    const invoice = await loadPayableInvoice(req);
+    const report = await reportPayment(needStore().store, invoice, input, actor.accountId);
+    await audit(req, "payment.reported", invoice.id, { reportId: report.id, method: report.method });
+    return { report };
+  }));
+
   // Kept for the existing Pay Now button: it now answers with the offline instructions.
   app.post("/api/invoices/:invoiceId/send-payment-link", authenticate(), wrap(async (req) => {
     const invoice = await loadPayableInvoice(req);
@@ -724,6 +745,8 @@ export function createApp(deps: Deps) {
       rescheduleNoticeHours: z.number().int().min(0).max(336).optional(),
       cancelNoticeHours: z.number().int().min(0).max(336).optional(),
       zelleRecipient: z.string().trim().max(200).optional(),
+      // An optional QR image, inline as a data URL (served only to payers linked to an invoice).
+      zelleQrDataUrl: z.string().max(300000).regex(/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/).nullable().optional(),
       hours: hoursSchema.optional(),
     }), req.body);
     const { store } = needStore();
@@ -757,7 +780,7 @@ export function createApp(deps: Deps) {
     await releaseExpiredHolds(ctx());
     const students = await teacherStudents(req);
     const invoices = await needStore().store.listInvoices({ studentIds: students.map((s) => s.id), includeDrafts: true });
-    return { invoices: invoices.map(toInvoiceDTO), total: invoices.length };
+    return { invoices: await invoicesWithReports(needStore().store, invoices), total: invoices.length };
   }));
   teacher.post("/invoices", wrap(async (req) => {
     const input = parse(newInvoiceSchema, req.body);
@@ -788,6 +811,31 @@ export function createApp(deps: Deps) {
     if (!result.alreadyPaid) await audit(req, "invoice.mark-paid", invoice.id, { method: input.method });
     return { ok: true, suppressed: false, ...result };
   }));
+  // Reported payments (Zelle today): Confirm records the payment; Not received keeps the invoice unpaid.
+  teacher.get("/payment-reports", wrap(async (req) => {
+    const status = parse(z.enum(["pending", "all"]).default("pending"), req.query.status);
+    return { reports: await teacherReportList(needStore().store, await teacherStudents(req), status === "all" ? undefined : "pending") };
+  }));
+  const loadTeacherReport = async (req: Request) => {
+    const report = await needStore().store.getPaymentReport(parse(uuid, req.params.id));
+    if (!report) throw notFound("That report wasn't found.");
+    await loadStudent(req, report.studentId);
+    return report;
+  };
+  teacher.post("/payment-reports/:id/confirm", wrap(async (req) => {
+    const input = parse(confirmSchema, req.body ?? {});
+    const report = await loadTeacherReport(req);
+    const result = await confirmReport(ctx(), report, input, actorOf(req).accountId);
+    await audit(req, "payment.report_confirmed", report.invoiceId, { reportId: report.id, paymentId: result.payment?.id ?? null });
+    return result;
+  }));
+  teacher.post("/payment-reports/:id/not-received", wrap(async (req) => {
+    const report = await loadTeacherReport(req);
+    const result = await rejectReport(needStore().store, report, actorOf(req).accountId);
+    await audit(req, "payment.report_not_received", report.invoiceId, { reportId: report.id });
+    return result;
+  }));
+
   teacher.post("/invoices/:id/send", wrap(async (req) => {
     const invoice = await loadTeacherInvoice(req);
     const updated = await issueDraft(ctx(), invoice.id);

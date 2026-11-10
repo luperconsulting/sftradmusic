@@ -22,8 +22,9 @@ export function paymentInstructions(inv: Pick<InvoiceRecord, "number" | "totalCe
   const due = formatMoney(Math.max(inv.totalCents - inv.amountPaidCents, 0));
   if (inv.paymentMethodChoice === "cash") return [`Pay ${due} in cash at your next lesson, before it starts.`, `Invoice #${inv.number}.`];
   if (inv.paymentMethodChoice === "card") return [`Pay ${due} by card from the portal.`, `Invoice #${inv.number}.`];
-  const to = settings.zelleRecipient.trim() || "the Zelle recipient shown in your portal";
-  return [`Send ${due} by Zelle to ${to}.`, `Put "Invoice #${inv.number}" in the memo.`];
+  const to = settings.zelleRecipient.trim();
+  if (!to) return [`Amount due: ${due} (invoice #${inv.number}).`, "Ask your teacher how to pay."];
+  return [`Send ${due} by Zelle to ${to}.`, `Put "SFTM-${inv.number}" in the memo, then tap "I've sent it" in the portal.`];
 }
 
 export function invoiceIssuedEmail(ctx: PortalContext, inv: InvoiceRecord, student: StudentRecord, settings: StudioSettings) {

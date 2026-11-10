@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
 import { ApiError } from "../http.js";
 import { inviteRateLimitSeconds } from "../services/invitations.js";
-import type { AccountRecord, AuthAdmin, InvitationRecord, InvoiceRecord, LessonRecord, PaymentRecord, PortalStore, ReferralCreditRecord, ReferralRecord, StudentRecord, StudioSettings } from "./types.js";
+import type { AccountRecord, AuthAdmin, InvitationRecord, InvoiceRecord, LessonRecord, PaymentRecord, PaymentReportRecord, PortalStore, ReferralCreditRecord, ReferralRecord, StudentRecord, StudioSettings } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
 
@@ -65,6 +65,7 @@ const toSettings = (teacherAccountId: string, r: any): StudioSettings => ({
   rescheduleNoticeHours: r?.reschedule_notice_hours ?? 24,
   cancelNoticeHours: r?.cancel_notice_hours ?? 24,
   zelleRecipient: r?.zelle_recipient ?? "",
+  zelleQrDataUrl: r?.zelle_qr_data_url ?? null,
   timezone: r?.timezone ?? "America/Los_Angeles",
 });
 const toReferral = (r: any): ReferralRecord => ({
@@ -88,6 +89,20 @@ const toReferralCredit = (r: any): ReferralCreditRecord => ({
   createdAt: r.created_at,
 });
 const noTeacher = () => new ApiError(400, "no_teacher", "A lesson needs a teacher.");
+const toPaymentReport = (r: any): PaymentReportRecord => ({
+  id: r.id,
+  invoiceId: r.invoice_id,
+  studentId: r.student_id,
+  reportedByAccountId: r.reported_by_account_id,
+  method: r.method,
+  amountCents: r.amount_cents,
+  note: r.note,
+  status: r.status,
+  reviewedByAccountId: r.reviewed_by_account_id,
+  reviewedAt: r.reviewed_at,
+  paymentId: r.payment_id,
+  createdAt: r.created_at,
+});
 const isUniqueViolation = (error: { code?: string } | null) => error?.code === "23505";
 const toInvoice = (r: any): InvoiceRecord => ({
   id: r.id,
@@ -350,6 +365,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         ...(patch.rescheduleNoticeHours !== undefined ? { reschedule_notice_hours: patch.rescheduleNoticeHours } : {}),
         ...(patch.cancelNoticeHours !== undefined ? { cancel_notice_hours: patch.cancelNoticeHours } : {}),
         ...(patch.zelleRecipient !== undefined ? { zelle_recipient: patch.zelleRecipient } : {}),
+        ...(patch.zelleQrDataUrl !== undefined ? { zelle_qr_data_url: patch.zelleQrDataUrl } : {}),
         updated_at: new Date().toISOString(),
       };
       return toSettings(teacherAccountId, must(await db.from("studio_settings").upsert(row, { onConflict: "teacher_account_id" }).select("*").single()));
@@ -427,6 +443,35 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     },
     async setReferralCreditUsed(id, invoiceId) {
       must(await db.from("referral_credits").update({ used_invoice_id: invoiceId, used_at: invoiceId ? new Date().toISOString() : null }).eq("id", id));
+    },
+    async createPaymentReport(input) {
+      const { data, error } = await db.from("payment_reports").insert({
+        invoice_id: input.invoiceId, student_id: input.studentId, reported_by_account_id: input.reportedByAccountId,
+        method: input.method, amount_cents: input.amountCents, note: input.note,
+      }).select("*").single();
+      if (isUniqueViolation(error)) return null;
+      return toPaymentReport(must({ data, error }));
+    },
+    async getPaymentReport(id) {
+      const r = must(await db.from("payment_reports").select("*").eq("id", id).maybeSingle());
+      return r ? toPaymentReport(r) : null;
+    },
+    async listPaymentReports(query) {
+      if ((query.studentIds && !query.studentIds.length) || (query.invoiceIds && !query.invoiceIds.length)) return [];
+      let q = db.from("payment_reports").select("*").order("created_at", { ascending: false });
+      if (query.studentIds) q = q.in("student_id", query.studentIds);
+      if (query.invoiceIds) q = q.in("invoice_id", query.invoiceIds);
+      if (query.status) q = q.eq("status", query.status);
+      return (must(await q) as any[]).map(toPaymentReport);
+    },
+    async reviewPaymentReport(id, input) {
+      const rows = must(await db.from("payment_reports").update({
+        status: input.status, reviewed_by_account_id: input.reviewedByAccountId, reviewed_at: new Date().toISOString(), payment_id: input.paymentId,
+      }).eq("id", id).eq("status", "pending").select("id")) as any[];
+      return rows.length === 1;
+    },
+    async setPaymentReportPayment(id, paymentId) {
+      must(await db.from("payment_reports").update({ payment_id: paymentId }).eq("id", id));
     },
     async setInvoiceStripeSession(invoiceId, sessionId) {
       must(await db.from("invoices").update({ stripe_checkout_session_id: sessionId }).eq("id", invoiceId));

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { studentFormError } from "../../../shared/student-form";
-import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, ReferralPanelDTO, StudentSummary, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
+import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, ReferralPanelDTO, StudentSummary, TeacherPaymentReportDTO, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
 import { formatMoney, SERIES_WEEKS_DEFAULT, SERIES_WEEKS_MAX, SESSION_PRICE_CENTS } from "../../../shared/pricing";
 import { api, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
@@ -33,7 +33,10 @@ const toHM = (m: number) => (m >= 1440 ? "23:59" : `${pad2(Math.floor(m / 60))}:
 const fromHM = (v: string) => { const [h, m] = v.split(":").map(Number); const t = (h || 0) * 60 + (m || 0); return t === 1439 ? 1440 : t; };
 const hoursText = (n: number) => String(Math.round(n * 100) / 100);
 type HourRow = { weekday: number; start: string; end: string };
-type StudioForm = { holdHours: string; rescheduleHours: string; cancelHours: string; zelle: string; timezone: string; hours: HourRow[] };
+type StudioForm = { holdHours: string; rescheduleHours: string; cancelHours: string; zelle: string; zelleQr: string | null; timezone: string; hours: HourRow[] };
+const QR_MAX_BYTES = 220 * 1024;
+const QR_TYPES = ["image/png", "image/jpeg", "image/webp"];
+const dollars = (n: number) => `$${n.toLocaleString("en-US", { minimumFractionDigits: n % 1 ? 2 : 0, maximumFractionDigits: 2 })}`;
 const EACH_LESSON = `Each lesson uses a credit or creates its own ${formatMoney(SESSION_PRICE_CENTS)} invoice.`;
 
 export function useTeacherVM(screen: string): VM {
@@ -50,6 +53,9 @@ export function useTeacherVM(screen: string): VM {
   const [calError, setCalError] = useState("");
   const [invoices, setInvoices] = useState<InvoiceDTO[] | null>(null);
   const [invoiceError, setInvoiceError] = useState("");
+  const [reports, setReports] = useState<TeacherPaymentReportDTO[] | null>(null);
+  const [reportsError, setReportsError] = useState("");
+  const [reportsAll, setReportsAll] = useState(false);
   const [videos, setVideos] = useState<VideoDTO[]>([]);
   const [assigns, setAssigns] = useState<PracticeAssignmentDTO[]>([]);
   const [invites, setInvites] = useState<InvitationDTO[]>([]);
@@ -128,6 +134,7 @@ export function useTeacherVM(screen: string): VM {
     rescheduleHours: String(r.settings?.rescheduleNoticeHours ?? 24),
     cancelHours: String(r.settings?.cancelNoticeHours ?? 24),
     zelle: r.settings?.zelleRecipient ?? "",
+    zelleQr: r.settings?.zelleQrDataUrl ?? null,
     timezone: r.settings?.timezone ?? TZ,
     hours: [...(r.hours ?? [])].sort((a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute).map((h) => ({ weekday: h.weekday, start: toHM(h.startMinute), end: toHM(h.endMinute) })),
   });
@@ -153,6 +160,12 @@ export function useTeacherVM(screen: string): VM {
     api("/teacher/invoices").then((r) => { setInvoices(r.invoices); setInvoiceError(""); }).catch((e) => { setInvoices([]); setInvoiceError(errorText(e)); });
   }, []);
   useEffect(() => { loadInvoices(); }, [loadInvoices]);
+  const loadReports = useCallback(() => {
+    api<{ reports: TeacherPaymentReportDTO[] }>(`/teacher/payment-reports?status=${reportsAll ? "all" : "pending"}`)
+      .then((r) => { setReports(r.reports ?? []); setReportsError(""); })
+      .catch((e) => { setReports([]); setReportsError(errorText(e)); });
+  }, [reportsAll]);
+  useEffect(() => { loadReports(); }, [loadReports]);
 
   const loadProfile = useCallback(async (id: string) => {
     try {
@@ -396,8 +409,9 @@ export function useTeacherVM(screen: string): VM {
     const markPaid = { label: "Mark paid", color: "#4A6149", run: () => open("markPaid", { invoice: i, form: { method: i.paymentMethod === "cash" ? "cash" : "zelle", paidAt: ymdInTz(new Date().toISOString()), reference: "" } }) };
     const actions = d === "Draft" ? [button("Issue", "#1D2A44", "send"), button("Void", "#9C5F22", "void")] : d === "Paid" || d === "Void" ? [] : [button("Remind", "#1D2A44", "remind"), markPaid, button("Void", "#9C5F22", "void")];
     const methodWord = i.paymentMethod === "cash" ? "Cash" : i.paymentMethod === "zelle" ? "Zelle" : i.paymentMethod === "card" ? "Card" : "";
+    const reported = i.paymentReport?.status === "pending" && d !== "Paid" && d !== "Void";
     return {
-      num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: methodWord ? `${i.title} · ${methodWord}` : i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: d, color: colors[d] ?? "#1D2A44", actions,
+      num: `#${i.number}`, issued: fmtDay(i.issueDate), student: student?.fullName ?? i.contactName, billedTo: i.contactName, items: methodWord ? `${i.title} · ${methodWord}` : i.title, due: fmtDay(i.dueDate), amount: `$${i.total.toLocaleString()}`, status: reported ? "Reported" : d, color: reported ? "#4A6149" : colors[d] ?? "#1D2A44", actions,
       openStudent: () => (student ? navigate(`/teacher/students/${student.id}`) : flash(`${i.contactName} isn't linked to an enrolled student.`)),
     };
   });
@@ -437,6 +451,8 @@ export function useTeacherVM(screen: string): VM {
     { label: "Notes to publish", value: overview ? String(draftCount) : unknown, sub: "Recent drafts" },
     { label: "Pending invitations", value: overview ? String(pendingInv.length) : unknown, sub: `${pendingInv.filter((i) => i.status === "expired").length} expired` },
   ];
+  const pendingReports = (reports ?? []).filter((r) => r.status === "pending");
+  if (pendingReports.length) stats.push({ label: "Reported payments", value: String(pendingReports.length), sub: "Waiting for you to confirm" });
   const upcoming = (events ?? []).filter((e) => new Date(e.startTime).getTime() >= now).sort((a, b) => a.startTime.localeCompare(b.startTime)).slice(0, 4).map((e) => {
     const zoom = /zoom/i.test(`${e.address} ${e.title}`);
     return { day: fmt(e.startTime, { weekday: "short", day: "numeric" }), time: clock(e.startTime), name: e.studentName, loc: zoom ? "Zoom" : "Music City SF", icon: zoom ? "ph ph-video-camera" : "ph ph-map-pin", status: e.status === "confirmed" ? "Confirmed" : e.status === "pending_payment" ? "Unpaid" : e.status === "completed" ? "Completed" : "Pending", sColor: e.status === "confirmed" ? "#4A6149" : e.status === "pending_payment" ? "#9C5F22" : "rgba(17,22,27,.5)" };
@@ -444,10 +460,10 @@ export function useTeacherVM(screen: string): VM {
 
   // ---- dialogs
   const dk = dialog?.kind ?? "", dd = dialog?.data ?? {};
-  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: "Add a student", teacherLesson: dialog?.data.lesson ? "Move lesson" : "Add a lesson", teacherInvoice: "New invoice", markPaid: dd.invoice ? `Mark invoice #${dd.invoice.number} paid` : "Mark paid", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
-  const dlgKickers: any = { addStudent: "Students", teacherLesson: st?.fullName ?? "Lessons", teacherInvoice: st?.fullName ?? "Billing", markPaid: "Billing", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
+  const dlgTitles: any = { migrate: "Convert to adult account", enroll2fa: "Security", addStudent: "Add a student", teacherLesson: dialog?.data.lesson ? "Move lesson" : "Add a lesson", teacherInvoice: "New invoice", markPaid: dd.invoice ? `Mark invoice #${dd.invoice.number} paid` : "Mark paid", confirmReport: dd.report ? `Confirm invoice #${dd.report.invoiceNumber} payment` : "Confirm payment", upload: "Upload a video", addurl: "Add a video by URL", editVideo: "Edit video", recovery: is.twofa ? "Use a recovery code" : "Recovery codes" };
+  const dlgKickers: any = { addStudent: "Students", teacherLesson: st?.fullName ?? "Lessons", teacherInvoice: st?.fullName ?? "Billing", markPaid: "Billing", confirmReport: "Reported payment", migrate: "Account transfer", enroll2fa: "Security", upload: "Video library", addurl: "Video library", editVideo: "Video library", recovery: "Security" };
   const dlg: any = { open: !!dialog, width: "520px", title: dlgTitles[dk] ?? "", kicker: dlgKickers[dk] ?? "" };
-  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "enroll2fa", "migrate", "teacherLesson", "teacherInvoice", "markPaid"].forEach((k) => { dlg[k] = dk === k; });
+  ["addStudent", "book", "pay", "invoice", "schedule", "video", "note", "family", "upload", "addurl", "editVideo", "recovery", "packages", "enroll2fa", "migrate", "teacherLesson", "teacherInvoice", "markPaid", "confirmReport"].forEach((k) => { dlg[k] = dk === k; });
   const hasUnpaid = openInv.length > 0;
   const connected = (b?: boolean) => (b ? "Ready" : "Unavailable");
   const integrations = settings?.integrations;
@@ -608,7 +624,25 @@ export function useTeacherVM(screen: string): VM {
     cardStatus: settings ? (settings.cardPayments ? "On (test mode)" : "Off") : "—", safeModeOn: !!settings?.safeMode, tfaStatusWord: sec.tfa.on ? "Enabled" : "Off",
     studio: {
       loading: !studio && !studioError, error: studioError, ready: !!studio, saving: studioSaving,
-      form: studio ?? { holdHours: "", rescheduleHours: "", cancelHours: "", zelle: "", timezone: TZ, hours: [] },
+      form: studio ?? { holdHours: "", rescheduleHours: "", cancelHours: "", zelle: "", zelleQr: null, timezone: TZ, hours: [] },
+      pickQr: (e: any) => {
+        const f: File | undefined = e.target.files?.[0];
+        e.target.value = "";
+        if (!f) return;
+        if (!QR_TYPES.includes(f.type)) return setStudioError("Use a PNG, JPEG or WebP image for the QR code.");
+        if (f.size > QR_MAX_BYTES) return setStudioError("That image is over 220 KB. Use a smaller QR code image.");
+        const reader = new FileReader();
+        reader.onload = () => {
+          const url = typeof reader.result === "string" ? reader.result : "";
+          if (!/^data:image\/(png|jpeg|webp);base64,/.test(url)) return setStudioError("That file couldn't be read as an image.");
+          if (url.length > QR_MAX_BYTES) return setStudioError("That image is over 220 KB. Use a smaller QR code image.");
+          setStudioError("");
+          setStudio((s) => (s ? { ...s, zelleQr: url } : s));
+        };
+        reader.onerror = () => setStudioError("That file couldn't be read.");
+        reader.readAsDataURL(f);
+      },
+      removeQr: () => setStudio((s) => (s ? { ...s, zelleQr: null } : s)),
       weekdays: WEEKDAYS.map((label, id) => ({ id, label })),
       set: (k: keyof StudioForm) => (e: any) => setStudio((f) => (f ? { ...f, [k]: e.target.value } : f)),
       setRow: (i: number, k: keyof HourRow) => (e: any) => setStudio((f) => (f ? { ...f, hours: f.hours.map((h, j) => (j === i ? { ...h, [k]: k === "weekday" ? Number(e.target.value) : e.target.value } : h)) } : f)),
@@ -625,7 +659,7 @@ export function useTeacherVM(screen: string): VM {
         setStudioSaving(true);
         setStudioError("");
         try {
-          const r = await api("/teacher/studio", { method: "PUT", body: { holdWindowMinutes: hold, rescheduleNoticeHours: resched, cancelNoticeHours: cancel, zelleRecipient: studio.zelle.trim(), hours } });
+          const r = await api("/teacher/studio", { method: "PUT", body: { holdWindowMinutes: hold, rescheduleNoticeHours: resched, cancelNoticeHours: cancel, zelleRecipient: studio.zelle.trim(), zelleQrDataUrl: studio.zelleQr, hours } });
           setStudio(studioToForm(r));
           flash("Lesson hours and policies saved.");
         } catch (e) {
@@ -711,6 +745,59 @@ export function useTeacherVM(screen: string): VM {
           if (profile && profile.student.id === dd.invoice.studentId) void loadProfile(profile.student.id);
           setStudents((await api("/teacher/students")).students);
           flash(`Invoice #${dd.invoice.number} marked paid.${dd.invoice.kind === "package" ? " 4 lesson credits added." : ""}`);
+        } catch (e) {
+          patchForm({ saving: false, error: errorText(e) });
+        }
+      },
+    },
+    // Reported payments (the payer said "I've sent it"; nothing is paid until confirmed here)
+    rp: {
+      loading: reports === null && !reportsError, error: reportsError, all: reportsAll,
+      toggleAll: () => setReportsAll((a) => !a),
+      count: pendingReports.length,
+      empty: !!reports && reports.length === 0 && !reportsError,
+      rows: (reports ?? []).map((r) => {
+        const pending = r.status === "pending";
+        return {
+          id: r.id, student: r.studentName, invoice: `#${r.invoiceNumber}`, memo: r.memo,
+          amounts: `${r.amount != null ? `${dollars(r.amount)} reported` : "Full amount reported"} · ${dollars(r.amountDue)} due`,
+          mismatch: r.amount != null && Math.abs(r.amount - r.amountDue) > 0.004,
+          note: r.note, method: r.method === "zelle" ? "Zelle" : r.method,
+          when: `Reported ${fmt(r.reportedAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${r.reportedBy ? ` by ${r.reportedBy}` : ""}`,
+          status: pending ? "Pending" : r.status === "confirmed" ? "Confirmed" : "Not received",
+          color: pending ? "#C27D38" : r.status === "confirmed" ? "#4A6149" : "#9C5F22",
+          pending,
+          confirm: () => open("confirmReport", { report: r, form: { amount: String(r.amount ?? r.amountDue), paidAt: ymdInTz(new Date().toISOString()), reference: "" } }),
+          notReceived: guard(async () => {
+            if (!window.confirm(`Mark the Zelle payment for invoice #${r.invoiceNumber} as not received? The invoice stays unpaid.`)) return;
+            await api(`/teacher/payment-reports/${encodeURIComponent(r.id)}/not-received`, { method: "POST", body: {} });
+            loadReports();
+            loadInvoices();
+            if (profile && profile.student.id === r.studentId) void loadProfile(profile.student.id);
+            flash(`Marked not received. Invoice #${r.invoiceNumber} is still unpaid.`);
+          }),
+        };
+      }),
+    },
+    cr: {
+      form, set: (k: string) => (e: any) => patchForm({ [k]: e.target.value, error: "" }), error: form.error, saving: !!form.saving,
+      line: dd.report ? `${dd.report.studentName} · memo ${dd.report.memo} · ${dollars(dd.report.amountDue)} due${dd.report.amount != null ? ` · ${dollars(dd.report.amount)} reported` : ""}` : "",
+      note: dd.report?.note ?? "",
+      save: async () => {
+        if (form.saving || !dd.report) return;
+        const amount = Number(String(form.amount ?? "").replace(/[$,]/g, ""));
+        if (!(amount > 0)) return patchForm({ error: "Enter the amount you received." });
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(form.paidAt ?? "")) return patchForm({ error: "Choose the date the payment arrived." });
+        patchForm({ saving: true, error: "" });
+        try {
+          const ref = String(form.reference ?? "").trim();
+          await api(`/teacher/payment-reports/${encodeURIComponent(dd.report.id)}/confirm`, { method: "POST", body: { amount, paidAt: form.paidAt, ...(ref ? { reference: ref } : {}) } });
+          close();
+          loadReports();
+          loadInvoices();
+          if (profile && profile.student.id === dd.report.studentId) void loadProfile(profile.student.id);
+          setStudents((await api("/teacher/students")).students);
+          flash(`Payment confirmed for invoice #${dd.report.invoiceNumber}.`);
         } catch (e) {
           patchForm({ saving: false, error: errorText(e) });
         }

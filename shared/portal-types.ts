@@ -113,7 +113,40 @@ export interface InvoiceDTO {
   kind?: "package" | "session" | "manual";
   /** The offline method the family chose: Zelle ($380 package) or cash ($375 package). */
   paymentMethod?: "zelle" | "cash" | "card" | null;
+  /** The open "I've sent it" report, if any. The invoice stays unpaid until the teacher confirms it. */
+  paymentReport?: PaymentReportDTO | null;
 }
+
+/** A payer's report that they sent money outside the portal (Zelle today; the method is generic text). */
+export interface PaymentReportDTO {
+  id: string;
+  invoiceId: string;
+  method: string;
+  /** What the payer says they sent, in dollars. Null means the amount due. */
+  amount: number | null;
+  note: string;
+  status: "pending" | "confirmed" | "not_received";
+  reportedAt: string;
+  reviewedAt: string | null;
+}
+
+/** The teacher's "Reported payments" list row. */
+export interface TeacherPaymentReportDTO extends PaymentReportDTO {
+  studentId: string;
+  studentName: string;
+  invoiceNumber: string;
+  memo: string;
+  amountDue: number;
+  reportedBy: string;
+}
+
+/** GET /api/invoices/:id/zelle. Only for signed-in payers linked to the invoice. */
+export type ZelleDetailsDTO =
+  | { available: true; recipient: string; amountDue: number; memo: string; qrDataUrl: string | null; report: PaymentReportDTO | null }
+  | { available: false; message: string; amountDue: number; memo: string; report: PaymentReportDTO | null };
+
+/** The memo a payer puts on a Zelle payment, e.g. "SFTM-1042". */
+export const invoiceMemo = (number: string | number) => `SFTM-${number}`;
 
 export interface PaymentDTO {
   id: string;

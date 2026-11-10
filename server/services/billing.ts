@@ -2,7 +2,7 @@
 // ("awaiting payment") until the teacher marks it paid. Only then are package credits added or a held session
 // confirmed. Card payments (Stripe test mode) mark invoices paid through the same path.
 import { z } from "zod";
-import type { BillingDTO, InvoiceDTO, PaymentDTO } from "../../shared/portal-types.js";
+import type { BillingDTO, InvoiceDTO, PaymentDTO, PaymentReportDTO } from "../../shared/portal-types.js";
 import { PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRER_CREDIT_CENTS, SESSION_PRICE_CENTS, type PackageMethod } from "../../shared/pricing.js";
 import { ApiError, notFound } from "../http.js";
 import type { InvoiceKind, InvoiceRecord, InvoiceRecordStatus, PaymentMethod, PaymentMethodChoice, PaymentRecord, PortalStore, StudentRecord } from "../store/types.js";
@@ -14,7 +14,7 @@ const dollars = (cents: number) => Math.round(cents) / 100;
 
 export const amountDueCents = (inv: Pick<InvoiceRecord, "totalCents" | "amountPaidCents">) => Math.max(inv.totalCents - inv.amountPaidCents, 0);
 
-export function toInvoiceDTO(inv: InvoiceRecord): InvoiceDTO {
+export function toInvoiceDTO(inv: InvoiceRecord, report: PaymentReportDTO | null = null): InvoiceDTO {
   return {
     id: inv.id,
     number: String(inv.number),
@@ -34,6 +34,7 @@ export function toInvoiceDTO(inv: InvoiceRecord): InvoiceDTO {
     payUrl: null,
     kind: inv.kind,
     paymentMethod: inv.paymentMethodChoice,
+    paymentReport: report,
   };
 }
 
@@ -61,9 +62,10 @@ export function derivePaymentStatus(totalCents: number, paidCents: number, curre
   return "sent";
 }
 
-/** The billing panel for one student's invoices and payments. */
-export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[], cardPayments = false): BillingDTO {
-  const visible = invoices.filter((i) => i.status !== "draft").map(toInvoiceDTO);
+/** The billing panel for one student's invoices and payments, with any open payment report on each invoice. */
+export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[], cardPayments = false, reports: PaymentReportDTO[] = []): BillingDTO {
+  const reportFor = (id: string) => reports.find((r) => r.invoiceId === id && r.status === "pending") ?? null;
+  const visible = invoices.filter((i) => i.status !== "draft").map((i) => toInvoiceDTO(i, reportFor(i.id)));
   const openInvoices = visible.filter(isOutstanding);
   return {
     outstanding: dollars(openInvoices.reduce((sum, i) => sum + Math.round(i.amountDue * 100), 0)),
@@ -75,10 +77,23 @@ export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[
   };
 }
 
-export async function getStudentBilling(store: Pick<PortalStore, "listInvoices" | "listPayments">, studentId: string, cardPayments = false): Promise<BillingDTO> {
+export async function getStudentBilling(store: Pick<PortalStore, "listInvoices" | "listPayments" | "listPaymentReports">, studentId: string, cardPayments = false): Promise<BillingDTO> {
   const invoices = await store.listInvoices({ studentIds: [studentId], includeDrafts: false });
-  const payments = await store.listPayments(invoices.map((i) => i.id));
-  return buildBilling(invoices, payments, cardPayments);
+  const [payments, reports] = await Promise.all([
+    store.listPayments(invoices.map((i) => i.id)),
+    store.listPaymentReports({ invoiceIds: invoices.map((i) => i.id), status: "pending" }),
+  ]);
+  return buildBilling(invoices, payments, cardPayments, reports.map(reportDTO));
+}
+
+const reportDTO = (r: { id: string; invoiceId: string; method: string; amountCents: number | null; note: string; status: PaymentReportDTO["status"]; createdAt: string; reviewedAt: string | null }): PaymentReportDTO => ({
+  id: r.id, invoiceId: r.invoiceId, method: r.method, amount: r.amountCents === null ? null : r.amountCents / 100, note: r.note, status: r.status, reportedAt: r.createdAt, reviewedAt: r.reviewedAt,
+});
+
+/** Invoices with their open payment report, for the teacher's list. */
+export async function invoicesWithReports(store: Pick<PortalStore, "listPaymentReports">, invoices: InvoiceRecord[]) {
+  const reports = await store.listPaymentReports({ invoiceIds: invoices.map((i) => i.id), status: "pending" });
+  return invoices.map((i) => toInvoiceDTO(i, (() => { const r = reports.find((x) => x.invoiceId === i.id); return r ? reportDTO(r) : null; })()));
 }
 
 const todayIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -199,7 +214,7 @@ export const paymentSchema = z.object({
 });
 
 /** A part payment. When it covers the rest, the invoice becomes paid with the same side effects. */
-export async function recordPartPayment(ctx: PortalContext, invoiceId: string, input: z.infer<typeof paymentSchema>, actorAccountId: string) {
+export async function recordPartPayment(ctx: PortalContext, invoiceId: string, input: { amount?: number; method: PaymentMethod; note: string; reference: string }, actorAccountId: string) {
   const { store } = ctx;
   const invoice = await store.getInvoice(invoiceId);
   if (!invoice) throw notFound("That invoice wasn't found.");

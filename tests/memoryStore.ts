@@ -3,7 +3,7 @@
 // Fixtures use the Arzo Luper test student and luperdev@gmail.com addresses only.
 import { randomUUID } from "node:crypto";
 import { ApiError } from "../server/http";
-import type { InvoiceRecord, LessonHoursRow, LessonRecord, PaymentRecord, PortalStore, ReferralCreditRecord, ReferralRecord, StudentRecord, StudioSettings } from "../server/store/types";
+import type { InvoiceRecord, LessonHoursRow, LessonRecord, PaymentRecord, PaymentReportRecord, PortalStore, ReferralCreditRecord, ReferralRecord, StudentRecord, StudioSettings } from "../server/store/types";
 
 export const TEACHER_ACCOUNT = "teach";
 export const ARZO_EMAIL = "luperdev@gmail.com";
@@ -26,17 +26,18 @@ export interface CoreTables {
   referrals: ReferralRecord[];
   referralCredits: ReferralCreditRecord[];
   stripeEvents: string[];
+  paymentReports: PaymentReportRecord[];
 }
 
 export function emptyTables(): CoreTables {
   return {
     students: [], guardians: [], studentGuardians: [], payers: [], lessons: [], bookings: [], invoices: [], payments: [],
-    settings: {}, hours: {}, series: [], ledger: [], referralCodes: [], referrals: [], referralCredits: [], stripeEvents: [],
+    settings: {}, hours: {}, series: [], ledger: [], referralCodes: [], referrals: [], referralCredits: [], stripeEvents: [], paymentReports: [],
   };
 }
 
 export const defaultSettings = (teacherAccountId: string): StudioSettings => ({
-  teacherAccountId, holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: "", timezone: "America/Los_Angeles",
+  teacherAccountId, holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: "", zelleQrDataUrl: null, timezone: "America/Los_Angeles",
 });
 
 const live = (l: LessonRecord) => l.status === "scheduled" || l.status === "pending_payment";
@@ -203,6 +204,24 @@ export function memoryCoreStore(tables: CoreTables = emptyTables()) {
       c.usedInvoiceId = invoiceId;
       c.usedAt = invoiceId ? new Date().toISOString() : null;
     },
+    async createPaymentReport(input: Parameters<PortalStore["createPaymentReport"]>[0]) {
+      // payment_reports_one_pending: one open report per invoice.
+      if (tables.paymentReports.some((r) => r.invoiceId === input.invoiceId && r.status === "pending")) return null;
+      const r: PaymentReportRecord = { id: randomUUID(), ...input, status: "pending", reviewedByAccountId: null, reviewedAt: null, paymentId: null, createdAt: new Date().toISOString() };
+      tables.paymentReports.push(r);
+      return { ...r };
+    },
+    async getPaymentReport(id: string) { const r = tables.paymentReports.find((x) => x.id === id); return r ? { ...r } : null; },
+    async listPaymentReports(q: Parameters<PortalStore["listPaymentReports"]>[0]) {
+      return tables.paymentReports.filter((r) => (!q.studentIds || q.studentIds.includes(r.studentId)) && (!q.invoiceIds || q.invoiceIds.includes(r.invoiceId)) && (!q.status || r.status === q.status)).map((r) => ({ ...r }));
+    },
+    async reviewPaymentReport(id: string, input: Parameters<PortalStore["reviewPaymentReport"]>[1]) {
+      const r = tables.paymentReports.find((x) => x.id === id);
+      if (!r || r.status !== "pending") return false;
+      Object.assign(r, { status: input.status, reviewedByAccountId: input.reviewedByAccountId, reviewedAt: new Date().toISOString(), paymentId: input.paymentId });
+      return true;
+    },
+    async setPaymentReportPayment(id: string, paymentId: string) { tables.paymentReports.find((x) => x.id === id)!.paymentId = paymentId; },
     async setInvoiceStripeSession() {},
     async claimStripeEvent(id: string) { if (tables.stripeEvents.includes(id)) return false; tables.stripeEvents.push(id); return true; },
   };

@@ -43,6 +43,15 @@ export default function SettingsView({ v }: { v: VM }) {
             <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}><span style={cap}>Cancel notice (hours)</span><input className="dc-f6" type="number" min={0} max={336} step={1} value={st.form.cancelHours} onChange={st.set("cancelHours")} style={input} /></label>
             <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}><span style={cap}>Zelle recipient</span><input className="dc-f6" value={st.form.zelle} onChange={st.set("zelle")} placeholder="Email or phone" style={input} /></label>
           </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: "8px" }}>
+            <span style={cap}>Zelle QR code (optional)</span>
+            <div style={{ display: "flex", alignItems: "center", gap: "12px", flexWrap: "wrap" }}>
+              {st.form.zelleQr && <img src={st.form.zelleQr} alt="Zelle QR code preview" style={{ width: "72px", height: "72px", objectFit: "contain", border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", background: "#fff" }} />}
+              <label className="dc-h1" style={{ ...small, display: "inline-flex", alignItems: "center", gap: "6px" }}><i className="ph ph-image"></i> {st.form.zelleQr ? "Replace image" : "Choose image"}<input type="file" accept="image/png,image/jpeg,image/webp" onChange={st.pickQr} style={{ display: "none" }} /></label>
+              {st.form.zelleQr && <button className="dc-h1" type="button" onClick={st.removeQr} style={{ ...small, color: "#9C5F22" }}>Remove</button>}
+            </div>
+            <div style={{ fontSize: "12px", color: "rgba(17,22,27,.55)", lineHeight: 1.5 }}>Shown to students paying an invoice. Leave the recipient blank to hide Zelle and show 'Ask your teacher how to pay.' PNG, JPEG or WebP, up to 220 KB.</div>
+          </div>
           <div style={{ fontSize: "12px", color: "rgba(17,22,27,.55)", lineHeight: 1.5 }}>Lessons are 60 minutes. A lesson booked without a credit is held this long for payment, then released. Late cancels still use the credit or keep the charge.</div>
         </>)}
         {st.error && <div role="alert" style={{ fontSize: "13px", color: "#9C5F22" }}>{st.error}</div>}

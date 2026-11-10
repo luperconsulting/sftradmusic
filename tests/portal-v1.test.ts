@@ -25,7 +25,7 @@ function setup(opts: { seed?: (t: CoreTables) => void; busy?: { start: number; e
   for (const s of tables.students) s.teacherAccountId = TEACHER_ACCOUNT;
   // Lesson hours every day 10:00-18:00.
   tables.hours[TEACHER_ACCOUNT] = [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startMinute: 600, endMinute: 1080 }));
-  tables.settings[TEACHER_ACCOUNT] = { teacherAccountId: TEACHER_ACCOUNT, holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: "luperdev+zelle@gmail.com", timezone: "America/Los_Angeles" };
+  tables.settings[TEACHER_ACCOUNT] = { teacherAccountId: TEACHER_ACCOUNT, holdWindowMinutes: 1440, rescheduleNoticeHours: 24, cancelNoticeHours: 24, zelleRecipient: "luperdev+zelle@gmail.com", zelleQrDataUrl: null, timezone: "America/Los_Angeles" };
   opts.seed?.(tables);
   const clock = { now: T0 };
   const mail = captureMail();
@@ -532,7 +532,7 @@ describe("migrations", () => {
   });
 
   it("enable RLS on every table they create and never grant anon access", () => {
-    for (const file of ["0005_core_data.sql", "0006_portal_v1.sql"]) {
+    for (const file of ["0005_core_data.sql", "0006_portal_v1.sql", "0007_payment_reports.sql"]) {
       const sql = readFileSync(`supabase/migrations/${file}`, "utf8");
       const tables = [...sql.matchAll(/create table public\.(\w+)/g)].map((m) => m[1]);
       expect(tables.length).toBeGreaterThan(0);

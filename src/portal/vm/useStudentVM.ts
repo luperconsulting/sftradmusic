@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { formatMoney, PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRAL_DISCOUNT_CENTS, REFERRER_CREDIT_CENTS, SERIES_WEEKS_DEFAULT, SERIES_WEEKS_MAX, SESSION_PRICE_CENTS, type PackageMethod } from "../../../shared/pricing";
-import { OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type SlotsResponse } from "../../../shared/portal-types";
+import { invoiceMemo, OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type PaymentReportDTO, type SlotsResponse, type ZelleDetailsDTO } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
 import { clock, copy, fmt, fmtDay, fullDate, greeting, money, TZ, todayLabel, useToast, useViewport } from "./common";
@@ -15,6 +15,9 @@ const EACH_LESSON = `Each lesson uses a credit or creates its own ${SESSION_PRIC
 const METHOD_LABEL: Record<PackageMethod, string> = { zelle: "Zelle", cash: "Cash (paid up front)", card: "Card" };
 const pad = (n: number) => String(n).padStart(2, "0");
 const statusWord: Record<string, string> = { sent: "Awaiting payment", overdue: "Overdue", partially_paid: "Partially paid", payment_processing: "Processing", paid: "Paid", void: "Void", draft: "Draft" };
+const REPORTED = "Payment reported, awaiting confirmation";
+const pendingReport = (i?: InvoiceDTO | null) => (i && i.status !== "paid" && i.status !== "void" && i.paymentReport?.status === "pending" ? i.paymentReport : null);
+const invoiceWord = (i: InvoiceDTO) => (pendingReport(i) ? REPORTED : statusWord[i.status] ?? i.status);
 const lessonWord = (l: LessonDTO) => (l.status === "pending_payment" ? "Awaiting payment" : l.status === "confirmed" ? "Confirmed" : l.status.charAt(0).toUpperCase() + l.status.slice(1).replace(/_/g, " "));
 const holdLine = (l: LessonDTO) => (l.status === "pending_payment" && l.holdExpiresAt ? `Held until ${fmt(l.holdExpiresAt, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "");
 
@@ -75,6 +78,10 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const [bkResult, setBkResult] = useState<{ count: number; held: number; hold: string; instructions: string[] } | null>(null);
   const [slotTick, setSlotTick] = useState(0);
   const [payInfo, setPayInfo] = useState<{ invoiceId: string; instructions: string[]; error?: string } | null>(null);
+  // "Pay with Zelle" details for the invoice in the pay or invoice dialog, and the "I've sent it" form.
+  const [zelle, setZelle] = useState<{ invoiceId: string; data: ZelleDetailsDTO | null; error?: string } | null>(null);
+  const [zelleTick, setZelleTick] = useState(0);
+  const [zForm, setZForm] = useState({ open: false, amount: "", note: "", busy: false, error: "" });
 
   const close = useCallback(() => setDialog(null), []);
   const open = useCallback((kind: string, d: any = {}) => {
@@ -239,6 +246,72 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const selected = allInvoices.find((i) => i.id === invoiceId) ?? firstOpen ?? allInvoices[0];
   const selectedOpen = !!selected && billing?.openInvoices.some((i) => i.id === selected.id);
 
+  // Load the Zelle details whenever an unpaid invoice is shown in the pay or invoice dialog. Payers only.
+  const zelleTargetId = (dialogKind === "pay" || dialogKind === "invoice") && selectedOpen && !readOnly ? selected?.id ?? null : null;
+  useEffect(() => {
+    if (!zelleTargetId) return;
+    let live = true;
+    setZelle((z) => (z?.invoiceId === zelleTargetId ? z : { invoiceId: zelleTargetId, data: null }));
+    setZForm({ open: false, amount: "", note: "", busy: false, error: "" });
+    api<ZelleDetailsDTO>(`/invoices/${zelleTargetId}/zelle`)
+      .then((d) => live && setZelle({ invoiceId: zelleTargetId, data: d }))
+      .catch((e) => live && setZelle({ invoiceId: zelleTargetId, data: null, error: errorText(e) }));
+    return () => { live = false; };
+  }, [zelleTargetId, zelleTick]);
+  const zData = zelle && zelle.invoiceId === zelleTargetId ? zelle : null;
+  const zReport: PaymentReportDTO | null = (zData?.data?.report?.status === "pending" ? zData.data.report : null) ?? pendingReport(selected);
+  const selectedCash = selected?.paymentMethod === "cash";
+  const submitReport = async () => {
+    if (readOnly) return flash(PREVIEW_OFF);
+    if (!selected || !selectedOpen || zForm.busy) return;
+    const amountText = zForm.amount.trim().replace(/[$,]/g, "");
+    const amount = amountText ? Number(amountText) : undefined;
+    if (amount !== undefined && !(amount > 0)) return setZForm((f) => ({ ...f, error: "Enter the amount you sent, or leave it blank." }));
+    const note = zForm.note.trim();
+    if (note.length > 500) return setZForm((f) => ({ ...f, error: "Keep the note under 500 characters." }));
+    const id = selected.id;
+    setZForm((f) => ({ ...f, busy: true, error: "" }));
+    try {
+      const { report } = await api<{ report: PaymentReportDTO }>(`/invoices/${id}/payment-reports`, { method: "POST", body: { method: "zelle", ...(amount !== undefined ? { amount } : {}), ...(note ? { note } : {}) } });
+      setZelle((z) => (z && z.invoiceId === id && z.data ? { ...z, data: { ...z.data, report } } : z));
+      setZForm({ open: false, amount: "", note: "", busy: false, error: "" });
+      flash("Payment reported. Zane will confirm it once it arrives.");
+      await load();
+    } catch (e) {
+      const code = e instanceof ApiRequestError ? e.code : "";
+      if (code === "report_pending" || code === "invoice_not_payable") {
+        setZForm({ open: false, amount: "", note: "", busy: false, error: "" });
+        flash(code === "report_pending" ? "A payment is already reported for this invoice." : "Nothing is due on this invoice.");
+        setZelleTick((t) => t + 1);
+        await load();
+      } else setZForm((f) => ({ ...f, busy: false, error: errorText(e) }));
+    }
+  };
+  const zp = {
+    show: !!zelleTargetId,
+    cash: selectedCash,
+    loading: !!zelleTargetId && !zData?.data && !zData?.error,
+    error: zData?.error ?? "",
+    available: zData?.data?.available === true,
+    unavailable: zData?.data?.available === false,
+    message: zData?.data && !zData.data.available ? zData.data.message : "",
+    recipient: zData?.data?.available ? zData.data.recipient : "",
+    amount: money(zData?.data?.amountDue ?? selected?.amountDue ?? 0),
+    memo: zData?.data?.memo || (selected ? invoiceMemo(selected.number) : ""),
+    qr: zData?.data?.available ? zData.data.qrDataUrl : null,
+    copyRecipient: () => { const t = zData?.data?.available ? zData.data.recipient : ""; if (!t) return; copy(t); flash("Zelle recipient copied."); },
+    copyAmount: () => { copy((zData?.data?.amountDue ?? selected?.amountDue ?? 0).toFixed(2)); flash("Amount copied."); },
+    copyMemo: () => { copy(zData?.data?.memo || (selected ? invoiceMemo(selected.number) : "")); flash("Memo copied."); },
+    reported: !!zReport,
+    reportedLine: zReport ? `${REPORTED}. Reported ${fmt(zReport.reportedAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}${zReport.amount != null ? ` · ${money(zReport.amount)} sent` : ""}.` : "",
+    canReport: !zReport && !readOnly && zData?.data?.available === true,
+    form: zForm,
+    toggle: () => setZForm((f) => ({ ...f, open: !f.open, error: "" })),
+    setAmount: (e: any) => setZForm((f) => ({ ...f, amount: e.target.value, error: "" })),
+    setNote: (e: any) => setZForm((f) => ({ ...f, note: e.target.value, error: "" })),
+    submit: submitReport,
+  };
+
   // Zelle and cash are paid offline: the pay dialog shows the instructions. Card only when card payments are on.
   const openPay = (inv?: InvoiceDTO) => {
     if (readOnly) return flash(PREVIEW_OFF);
@@ -386,7 +459,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     ? {
         issued: fmtDay(selected.issueDate, { month: "short", day: "numeric", year: "numeric" }),
         due: fmtDay(selected.dueDate, { month: "short", day: "numeric", year: "numeric" }),
-        status: statusWord[selected.status] ?? selected.status,
+        status: invoiceWord(selected),
         color: selected.status === "paid" ? "#4A6149" : "#9C5F22",
         total: money(selected.total),
         amountDue: money(selected.amountDue),
@@ -407,8 +480,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     number: firstOpen?.number ?? "",
     items: firstOpen?.lines.map((l) => l.label).join(", ") || firstOpen?.title || "",
     due: fmtDay(firstOpen?.dueDate, { month: "long", day: "numeric", year: "numeric" }),
-    statusLabel: firstOpen ? statusWord[firstOpen.status] ?? firstOpen.status : "",
-    statusLine: overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Awaiting payment",
+    statusLabel: firstOpen ? invoiceWord(firstOpen) : "",
+    statusLine: pendingReport(firstOpen) ? "Payment reported" : overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Awaiting payment",
     hasLast: !!lastPaid,
     lastAmount: lastPaid ? money(lastPaid.amountPaid || lastPaid.total) : "",
     lastDate: fmtDay(lastPaid?.issueDate),
@@ -497,7 +570,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     ob, rs, bk, dlg, dv, dn, inv: invView, sched, form, familyRows,
     schedNote: `Moves are free until ${rescheduleHours} hours before a lesson. Cancelling within ${cancelHours} hours still uses the credit or keeps the charge.`,
     hasLessonCal: false, noLessonCal: true, lessonCalUrl: "",
-    invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: statusWord[i.status] ?? i.status, on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
+    invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: invoiceWord(i), on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),
     paymentUnavailable: !loading && !billing,
     // Each recorded payment, newest first, from Supabase.
     paymentHistory: (billing?.payments ?? []).map((p) => ({ id: p.id, number: p.invoiceNumber, date: fmtDay(p.paidAt.slice(0, 10)), amount: money(p.amount), status: "Paid" })),
@@ -506,7 +579,9 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     openBook, openReschedule: openRescheduleFlow, openPay: () => openPay(), openInvoice: () => { setInvoiceId(null); open("invoice"); }, openSchedule: () => open("schedule"), openFamily: () => open("family"),
     openRecovery: () => open("recovery"),
     closeDialog: close, stop: (e: any) => e.stopPropagation(), hasToast: !!toast, toast,
+    zp,
     pay: {
+      showSteps: selectedCash || !zp.show || !!zp.error || zp.unavailable,
       loading: !payInfo,
       steps: payInfo?.instructions ?? [],
       error: payInfo?.error ?? "",
