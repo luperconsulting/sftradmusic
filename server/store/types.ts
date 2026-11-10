@@ -41,7 +41,7 @@ export interface NewStudentInput {
   teacherAccountId: string | null;
 }
 
-export type LessonStatus = "scheduled" | "completed" | "cancelled" | "rescheduled" | "no_show";
+export type LessonStatus = "scheduled" | "pending_payment" | "completed" | "cancelled" | "rescheduled" | "released" | "no_show";
 
 export interface LessonRecord {
   id: string;
@@ -57,6 +57,11 @@ export interface LessonRecord {
   cancellationReason: string | null;
   rescheduledFromId: string | null;
   createdAt: string;
+  /** Set while a single session waits for payment. The slot is released after this time. */
+  holdExpiresAt: string | null;
+  invoiceId: string | null;
+  seriesId: string | null;
+  lateCancel: boolean;
 }
 
 export interface NewLessonInput {
@@ -70,6 +75,50 @@ export interface NewLessonInput {
   createdByAccountId: string;
   source: "teacher" | "portal" | "import";
   rescheduledFromId?: string | null;
+  status?: "scheduled" | "pending_payment";
+  holdExpiresAt?: string | null;
+  invoiceId?: string | null;
+  seriesId?: string | null;
+}
+
+export interface StudioSettings {
+  teacherAccountId: string;
+  holdWindowMinutes: number;
+  rescheduleNoticeHours: number;
+  cancelNoticeHours: number;
+  zelleRecipient: string;
+  timezone: string;
+}
+
+export interface LessonHoursRow {
+  weekday: number;
+  startMinute: number;
+  endMinute: number;
+}
+
+export type InvoiceKind = "package" | "session" | "manual";
+export type PaymentMethodChoice = "zelle" | "cash" | "card";
+
+export interface ReferralRecord {
+  id: string;
+  referrerStudentId: string;
+  referredStudentId: string;
+  code: string;
+  status: "pending" | "completed";
+  discountCents: number;
+  discountInvoiceId: string | null;
+  completedAt: string | null;
+  createdAt: string;
+}
+
+export interface ReferralCreditRecord {
+  id: string;
+  referralId: string;
+  studentId: string;
+  amountCents: number;
+  usedInvoiceId: string | null;
+  usedAt: string | null;
+  createdAt: string;
 }
 
 export type InvoiceRecordStatus = "draft" | "sent" | "partially_paid" | "paid" | "void";
@@ -80,6 +129,7 @@ export interface InvoiceRecord {
   studentId: string;
   payerId: string | null;
   payerName: string;
+  payerEmail: string | null;
   title: string;
   currency: string;
   totalCents: number;
@@ -89,6 +139,9 @@ export interface InvoiceRecord {
   dueDate: string;
   createdAt: string;
   lines: { label: string; amountCents: number; lessonId: string | null }[];
+  kind: InvoiceKind;
+  paymentMethodChoice: PaymentMethodChoice | null;
+  packageLessons: number;
 }
 
 export interface NewInvoiceInput {
@@ -99,7 +152,10 @@ export interface NewInvoiceInput {
   dueDate: string;
   status: "draft" | "sent";
   lines: { label: string; amountCents: number; lessonId: string | null }[];
-  createdByAccountId: string;
+  createdByAccountId: string | null;
+  kind?: InvoiceKind;
+  paymentMethodChoice?: PaymentMethodChoice | null;
+  packageLessons?: number;
 }
 
 export interface PaymentRecord {
@@ -107,11 +163,14 @@ export interface PaymentRecord {
   invoiceId: string;
   payerId: string | null;
   amountCents: number;
-  method: "manual" | "cash" | "check" | "card" | "bank_transfer" | "other";
+  method: PaymentMethod;
   status: "pending" | "succeeded" | "failed" | "refunded";
   paidAt: string;
   note: string;
+  reference: string;
 }
+
+export type PaymentMethod = "zelle" | "cash" | "card" | "manual" | "check" | "bank_transfer" | "other";
 
 export interface InvitationRecord {
   id: string;
@@ -172,19 +231,51 @@ export interface PortalStore {
   /** The studio's first active teacher. New students without an explicit teacher are assigned here. */
   studioTeacherAccountId(): Promise<string | null>;
 
-  listLessons(query: { studentIds?: string[]; teacherAccountId?: string; from?: string; to?: string }): Promise<LessonRecord[]>;
+  listLessons(query: { studentIds?: string[]; teacherAccountId?: string; from?: string; to?: string; createdFrom?: string; statuses?: LessonRecord["status"][] }): Promise<LessonRecord[]>;
   getLesson(id: string): Promise<LessonRecord | null>;
   /** Inserts the lesson and its booking row. */
   createLesson(input: NewLessonInput): Promise<LessonRecord>;
   /** Marks a lesson cancelled (with who and why) or rescheduled. */
-  closeLesson(id: string, input: { status: "cancelled" | "rescheduled"; byAccountId: string; reason: string | null }): Promise<LessonRecord>;
+  closeLesson(id: string, input: { status: "cancelled" | "rescheduled" | "released"; byAccountId: string | null; reason: string | null; lateCancel?: boolean }): Promise<LessonRecord>;
+  /** Confirms a held lesson (clears the hold) or moves its invoice link. */
+  updateLesson(id: string, patch: { status?: "scheduled" | "pending_payment"; holdExpiresAt?: string | null; invoiceId?: string | null }): Promise<LessonRecord>;
+  listLessonsByInvoice(invoiceId: string): Promise<LessonRecord[]>;
+  /** Held lessons whose hold has run out (or whose start has arrived) as of `now`. */
+  listExpiredHolds(now: string): Promise<LessonRecord[]>;
+  createSeries(input: { studentId: string; teacherAccountId: string | null; createdByAccountId: string }): Promise<string>;
+
+  getSettings(teacherAccountId: string): Promise<StudioSettings>;
+  saveSettings(teacherAccountId: string, patch: Partial<Omit<StudioSettings, "teacherAccountId">>): Promise<StudioSettings>;
+  listLessonHours(teacherAccountId: string): Promise<LessonHoursRow[]>;
+  replaceLessonHours(teacherAccountId: string, rows: LessonHoursRow[]): Promise<LessonHoursRow[]>;
+
+  creditBalances(studentIds: string[]): Promise<Record<string, number>>;
+  /** False when the ledger already has this package payment or this lesson's entry (unique per reason). */
+  addCredit(input: { studentId: string; delta: number; reason: "package_paid" | "lesson_booked" | "lesson_refund" | "adjustment"; invoiceId?: string | null; lessonId?: string | null; byAccountId?: string | null }): Promise<boolean>;
+
+  getReferralCode(studentId: string): Promise<string | null>;
+  saveReferralCode(studentId: string, code: string): Promise<void>;
+  findStudentByReferralCode(code: string): Promise<string | null>;
+  /** Null when the referred student already has a referral. */
+  createReferral(input: { referrerStudentId: string; referredStudentId: string; code: string; discountCents: number }): Promise<ReferralRecord | null>;
+  getReferralForReferred(studentId: string): Promise<ReferralRecord | null>;
+  listReferrals(query: { referrerStudentIds?: string[] }): Promise<ReferralRecord[]>;
+  updateReferral(id: string, patch: { status?: "completed"; discountInvoiceId?: string | null; completedAt?: string | null }): Promise<void>;
+  /** False when this referral already earned its credit. */
+  createReferralCredit(input: { referralId: string; studentId: string; amountCents: number }): Promise<boolean>;
+  listReferralCredits(studentIds: string[]): Promise<ReferralCreditRecord[]>;
+  setReferralCreditUsed(id: string, invoiceId: string | null): Promise<void>;
+
+  setInvoiceStripeSession(invoiceId: string, sessionId: string): Promise<void>;
+  /** False when this Stripe event was already handled. */
+  claimStripeEvent(id: string, type: string, invoiceId: string | null): Promise<boolean>;
 
   listInvoices(query: { studentIds?: string[]; includeDrafts: boolean }): Promise<InvoiceRecord[]>;
   getInvoice(id: string): Promise<InvoiceRecord | null>;
   createInvoice(input: NewInvoiceInput): Promise<InvoiceRecord>;
   updateInvoiceStatus(id: string, patch: { status: InvoiceRecordStatus; amountPaidCents?: number }): Promise<InvoiceRecord>;
   listPayments(invoiceIds: string[]): Promise<PaymentRecord[]>;
-  recordPayment(input: { invoiceId: string; payerId: string | null; amountCents: number; method: PaymentRecord["method"]; note: string; recordedByAccountId: string }): Promise<PaymentRecord>;
+  recordPayment(input: { invoiceId: string; payerId: string | null; amountCents: number; method: PaymentMethod; note: string; reference?: string; paidAt?: string; recordedByAccountId: string | null }): Promise<PaymentRecord>;
   studentCounts(): Promise<Record<string, { notes: number; videos: number; assignments: number }>>;
   studentAccounts(): Promise<Record<string, { accountId: string; status: "active" | "suspended" }>>;
 

@@ -1,9 +1,13 @@
-// Balances, invoice history and payment history, all read from Supabase. Nothing here charges a card or
-// sends email. "Mark paid" records a payment the teacher already received outside the portal.
+// Invoices, balances, payments and credits, all in Supabase. Zelle and cash are paid offline: an invoice waits
+// ("awaiting payment") until the teacher marks it paid. Only then are package credits added or a held session
+// confirmed. Card payments (Stripe test mode) mark invoices paid through the same path.
 import { z } from "zod";
 import type { BillingDTO, InvoiceDTO, PaymentDTO } from "../../shared/portal-types.js";
+import { PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRER_CREDIT_CENTS, SESSION_PRICE_CENTS, type PackageMethod } from "../../shared/pricing.js";
 import { ApiError, notFound } from "../http.js";
-import type { InvoiceRecord, InvoiceRecordStatus, PaymentRecord, PortalStore, StudentRecord } from "../store/types.js";
+import type { InvoiceKind, InvoiceRecord, InvoiceRecordStatus, PaymentMethod, PaymentMethodChoice, PaymentRecord, PortalStore, StudentRecord } from "../store/types.js";
+import { teacherFor, type PortalContext } from "./context.js";
+import { notify } from "./notify.js";
 
 const CLOSED = new Set(["draft", "void", "paid"]);
 const dollars = (cents: number) => Math.round(cents) / 100;
@@ -28,6 +32,8 @@ export function toInvoiceDTO(inv: InvoiceRecord): InvoiceDTO {
     studentId: inv.studentId,
     lines: inv.lines.map((l) => ({ label: l.label, amount: dollars(l.amountCents) })),
     payUrl: null,
+    kind: inv.kind,
+    paymentMethod: inv.paymentMethodChoice,
   };
 }
 
@@ -40,6 +46,7 @@ export function toPaymentDTO(p: PaymentRecord, invoices: InvoiceRecord[]): Payme
     method: p.method,
     status: p.status,
     paidAt: p.paidAt,
+    reference: p.reference,
   };
 }
 
@@ -54,8 +61,8 @@ export function derivePaymentStatus(totalCents: number, paidCents: number, curre
   return "sent";
 }
 
-/** The billing panel for a set of invoices (already scoped to one student) and their payments. */
-export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[]): BillingDTO {
+/** The billing panel for one student's invoices and payments. */
+export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[], cardPayments = false): BillingDTO {
   const visible = invoices.filter((i) => i.status !== "draft").map(toInvoiceDTO);
   const openInvoices = visible.filter(isOutstanding);
   return {
@@ -63,15 +70,214 @@ export function buildBilling(invoices: InvoiceRecord[], payments: PaymentRecord[
     openInvoices,
     history: visible,
     bookingBlocked: openInvoices.length > 0,
-    paymentsOpen: false,
+    paymentsOpen: cardPayments,
     payments: payments.filter((p) => p.status === "succeeded").map((p) => toPaymentDTO(p, invoices)),
   };
 }
 
-export async function getStudentBilling(store: Pick<PortalStore, "listInvoices" | "listPayments">, studentId: string): Promise<BillingDTO> {
+export async function getStudentBilling(store: Pick<PortalStore, "listInvoices" | "listPayments">, studentId: string, cardPayments = false): Promise<BillingDTO> {
   const invoices = await store.listInvoices({ studentIds: [studentId], includeDrafts: false });
   const payments = await store.listPayments(invoices.map((i) => i.id));
-  return buildBilling(invoices, payments);
+  return buildBilling(invoices, payments, cardPayments);
+}
+
+const todayIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+
+/**
+ * Creates an invoice with the referral adjustments that apply to this student:
+ *  - $15 off the referred student's first invoice
+ *  - each unused $25 referrer credit comes off the next invoice, exactly once, never below $0
+ * Then emails the payer the invoice with payment instructions.
+ */
+export async function issueInvoice(ctx: PortalContext, input: {
+  student: StudentRecord;
+  kind: InvoiceKind;
+  title: string;
+  lines: { label: string; amountCents: number; lessonId: string | null }[];
+  method: PaymentMethodChoice | null;
+  packageLessons?: number;
+  draft?: boolean;
+  dueDate?: string;
+  issueDate?: string;
+  actorAccountId: string | null;
+}): Promise<InvoiceRecord> {
+  const { store } = ctx;
+  const lines = [...input.lines];
+  let subtotal = lines.reduce((s, l) => s + l.amountCents, 0);
+  const referral = input.draft ? null : await store.getReferralForReferred(input.student.id);
+  const applyDiscount = !!referral && referral.status === "pending" && !referral.discountInvoiceId && subtotal > 0;
+  if (applyDiscount) {
+    const off = Math.min(referral!.discountCents, subtotal);
+    lines.push({ label: "Referral discount", amountCents: -off, lessonId: null });
+    subtotal -= off;
+  }
+  const credits = input.draft ? [] : (await store.listReferralCredits([input.student.id])).filter((c) => !c.usedInvoiceId);
+  const usedCredits: string[] = [];
+  for (const credit of credits) {
+    if (subtotal <= 0) break;
+    const off = Math.min(credit.amountCents, subtotal);
+    lines.push({ label: "Referral credit", amountCents: -off, lessonId: null });
+    subtotal -= off;
+    usedCredits.push(credit.id);
+  }
+  const issueDate = input.issueDate ?? todayIso(ctx.now());
+  const created = await store.createInvoice({
+    studentId: input.student.id,
+    payerId: input.student.payerId,
+    title: input.title,
+    issueDate,
+    dueDate: input.dueDate ?? issueDate,
+    status: input.draft ? "draft" : "sent",
+    lines,
+    createdByAccountId: input.actorAccountId,
+    kind: input.kind,
+    paymentMethodChoice: input.method,
+    packageLessons: input.packageLessons ?? 0,
+  });
+  if (applyDiscount) await store.updateReferral(referral!.id, { discountInvoiceId: created.id });
+  for (const id of usedCredits) await store.setReferralCreditUsed(id, created.id);
+  if (input.draft) return created;
+  // A $0 invoice (fully covered by credits) is settled at once.
+  if (created.totalCents === 0) {
+    const paid = await store.updateInvoiceStatus(created.id, { status: "paid" });
+    await onInvoicePaid(ctx, paid);
+    return paid;
+  }
+  const teacher = await teacherFor(store, input.student);
+  if (teacher) await notify.invoiceIssued(ctx, created, input.student, await store.getSettings(teacher));
+  return created;
+}
+
+/** Side effects of an invoice becoming paid. Each step is idempotent, so a repeat call changes nothing. */
+export async function onInvoicePaid(ctx: PortalContext, invoice: InvoiceRecord) {
+  const { store } = ctx;
+  if (invoice.kind === "package" && invoice.packageLessons > 0) {
+    await store.addCredit({ studentId: invoice.studentId, delta: invoice.packageLessons, reason: "package_paid", invoiceId: invoice.id });
+  }
+  for (const lesson of await store.listLessonsByInvoice(invoice.id)) {
+    if (lesson.status === "pending_payment") await store.updateLesson(lesson.id, { status: "scheduled", holdExpiresAt: null });
+  }
+  const referral = await store.getReferralForReferred(invoice.studentId);
+  if (referral && referral.status === "pending" && referral.discountInvoiceId === invoice.id) {
+    await store.updateReferral(referral.id, { status: "completed", completedAt: new Date(ctx.now()).toISOString() });
+    await store.createReferralCredit({ referralId: referral.id, studentId: referral.referrerStudentId, amountCents: REFERRER_CREDIT_CENTS });
+  }
+}
+
+export const markPaidSchema = z.object({
+  method: z.enum(["zelle", "cash", "card", "check", "bank_transfer", "other"]).default("zelle"),
+  paidAt: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  reference: z.string().trim().max(200).default(""),
+});
+
+/**
+ * Records the full amount due and marks the invoice paid. A second call on a paid invoice is a no-op,
+ * so a repeated click or webhook can't add credits or payments twice.
+ */
+export async function markInvoicePaid(ctx: PortalContext, invoiceId: string, input: { method: PaymentMethod; paidAt?: string; reference?: string; note?: string; actorAccountId: string | null }) {
+  const { store } = ctx;
+  const invoice = await store.getInvoice(invoiceId);
+  if (!invoice) throw notFound("That invoice wasn't found.");
+  if (invoice.status === "paid") return { invoice: toInvoiceDTO(invoice), payment: null, alreadyPaid: true };
+  if (invoice.status === "void" || invoice.status === "draft") throw new ApiError(409, "invoice_not_payable", "Only an issued invoice can be marked paid.");
+  const due = amountDueCents(invoice);
+  const payment = due > 0
+    ? await store.recordPayment({ invoiceId, payerId: invoice.payerId, amountCents: due, method: input.method, note: input.note ?? "", reference: input.reference ?? "", paidAt: input.paidAt ? new Date(`${input.paidAt}T12:00:00Z`).toISOString() : undefined, recordedByAccountId: input.actorAccountId })
+    : null;
+  const updated = await store.updateInvoiceStatus(invoiceId, { amountPaidCents: invoice.totalCents, status: "paid" });
+  await onInvoicePaid(ctx, updated);
+  const student = await store.getStudent(updated.studentId);
+  if (student) await notify.paymentReceived(ctx, updated, student);
+  return { invoice: toInvoiceDTO(updated), payment: payment ? toPaymentDTO(payment, [updated]) : null, alreadyPaid: false };
+}
+
+export const paymentSchema = z.object({
+  amount: z.number().finite().positive().max(100000).transform((d) => Math.round(d * 100)).optional(),
+  method: z.enum(["zelle", "cash", "card", "manual", "check", "bank_transfer", "other"]).default("manual"),
+  note: z.string().trim().max(500).default(""),
+  reference: z.string().trim().max(200).default(""),
+});
+
+/** A part payment. When it covers the rest, the invoice becomes paid with the same side effects. */
+export async function recordPartPayment(ctx: PortalContext, invoiceId: string, input: z.infer<typeof paymentSchema>, actorAccountId: string) {
+  const { store } = ctx;
+  const invoice = await store.getInvoice(invoiceId);
+  if (!invoice) throw notFound("That invoice wasn't found.");
+  if (invoice.status === "void" || invoice.status === "draft" || invoice.status === "paid") throw new ApiError(409, "invoice_not_payable", "Only an unpaid, issued invoice can take a payment.");
+  const due = amountDueCents(invoice);
+  const amountCents = input.amount ?? due;
+  if (amountCents > due) throw new ApiError(400, "invalid_input", "That is more than the amount due.");
+  if (amountCents === due) return markInvoicePaid(ctx, invoiceId, { method: input.method, reference: input.reference, note: input.note, actorAccountId });
+  const payment = await store.recordPayment({ invoiceId, payerId: invoice.payerId, amountCents, method: input.method, note: input.note, reference: input.reference, recordedByAccountId: actorAccountId });
+  const paid = invoice.amountPaidCents + amountCents;
+  const updated = await store.updateInvoiceStatus(invoiceId, { amountPaidCents: paid, status: derivePaymentStatus(invoice.totalCents, paid, invoice.status) });
+  return { invoice: toInvoiceDTO(updated), payment: toPaymentDTO(payment, [updated]), alreadyPaid: false };
+}
+
+/**
+ * Voids an unpaid invoice and undoes what it reserved: a held session is released, the referral discount and
+ * any referrer credit it used become available again.
+ */
+export async function voidInvoice(ctx: PortalContext, invoiceId: string, opts: { releaseLessons?: boolean } = {}) {
+  const { store } = ctx;
+  const invoice = await store.getInvoice(invoiceId);
+  if (!invoice) throw notFound("That invoice wasn't found.");
+  if (invoice.status === "void") return toInvoiceDTO(invoice);
+  if (invoice.amountPaidCents > 0) throw new ApiError(409, "invoice_has_payments", "This invoice has payments recorded, so it can't be voided.");
+  const updated = await store.updateInvoiceStatus(invoiceId, { status: "void" });
+  const referral = await store.getReferralForReferred(invoice.studentId);
+  if (referral && referral.discountInvoiceId === invoiceId && referral.status === "pending") await store.updateReferral(referral.id, { discountInvoiceId: null });
+  for (const credit of await store.listReferralCredits([invoice.studentId])) {
+    if (credit.usedInvoiceId === invoiceId) await store.setReferralCreditUsed(credit.id, null);
+  }
+  if (opts.releaseLessons !== false) {
+    for (const lesson of await store.listLessonsByInvoice(invoiceId)) {
+      if (lesson.status === "pending_payment") await store.closeLesson(lesson.id, { status: "released", byAccountId: null, reason: "Invoice voided" });
+    }
+  }
+  return toInvoiceDTO(updated);
+}
+
+export async function issueDraft(ctx: PortalContext, invoiceId: string) {
+  const { store } = ctx;
+  const invoice = await store.getInvoice(invoiceId);
+  if (!invoice) throw notFound("That invoice wasn't found.");
+  if (invoice.status !== "draft") throw new ApiError(409, "invoice_not_draft", "Only a draft invoice can be issued.");
+  const updated = await store.updateInvoiceStatus(invoiceId, { status: "sent" });
+  const student = await store.getStudent(updated.studentId);
+  const teacher = student ? await teacherFor(store, student) : null;
+  if (student && teacher) await notify.invoiceIssued(ctx, updated, student, await store.getSettings(teacher));
+  return toInvoiceDTO(updated);
+}
+
+export const packageSchema = z.object({
+  studentId: z.string().uuid(),
+  method: z.enum(["zelle", "cash", "card"]),
+});
+
+/**
+ * A 4-lesson package invoice: $380 by Zelle (or card), $375 in cash. It waits for payment; credits are added
+ * only when it is marked paid. An unpaid package invoice for the same student is returned instead of a second one.
+ */
+export async function buyPackage(ctx: PortalContext, student: StudentRecord, method: PackageMethod, actorAccountId: string, cardPayments: boolean) {
+  if (method === "card" && !cardPayments) throw new ApiError(400, "card_payments_off", "Card payments aren't available. Choose Zelle or cash.");
+  const open = (await ctx.store.listInvoices({ studentIds: [student.id], includeDrafts: false }))
+    .find((i) => i.kind === "package" && (i.status === "sent" || i.status === "partially_paid"));
+  if (open) return { invoice: open, existing: true };
+  const label = method === "cash" ? "4-lesson package (cash)" : method === "card" ? "4-lesson package (card)" : "4-lesson package (Zelle)";
+  const invoice = await issueInvoice(ctx, {
+    student, kind: "package", title: "4-lesson package", method, packageLessons: PACKAGE_LESSONS, actorAccountId,
+    lines: [{ label, amountCents: PACKAGE_PRICE_CENTS[method], lessonId: null }],
+  });
+  return { invoice, existing: false };
+}
+
+/** The $100 invoice for one held session. */
+export function sessionInvoice(ctx: PortalContext, student: StudentRecord, lessonId: string, label: string, actorAccountId: string | null) {
+  return issueInvoice(ctx, {
+    student, kind: "session", title: "Single session", method: "zelle", actorAccountId,
+    lines: [{ label, amountCents: SESSION_PRICE_CENTS, lessonId }],
+  });
 }
 
 const cents = z.number().finite().positive().max(100000).transform((d) => Math.round(d * 100));
@@ -83,57 +289,18 @@ export const newInvoiceSchema = z.object({
   issueDate: dateOnly.optional(),
   dueDate: dateOnly.optional(),
   draft: z.boolean().optional(),
+  method: z.enum(["zelle", "cash"]).default("zelle"),
   lines: z.array(z.object({ label: z.string().trim().min(1).max(200), amount: cents, lessonId: z.string().uuid().nullable().optional() })).min(1).max(50),
 });
 
-export async function createInvoice(store: PortalStore, student: StudentRecord, input: z.infer<typeof newInvoiceSchema>, actorAccountId: string) {
-  const today = new Date().toISOString().slice(0, 10);
-  const issueDate = input.issueDate ?? today;
+/** A teacher's manual invoice. */
+export async function createManualInvoice(ctx: PortalContext, student: StudentRecord, input: z.infer<typeof newInvoiceSchema>, actorAccountId: string) {
+  const issueDate = input.issueDate ?? todayIso(ctx.now());
   const dueDate = input.dueDate ?? issueDate;
   if (dueDate < issueDate) throw new ApiError(400, "invalid_input", "The due date can't be before the issue date.");
-  const created = await store.createInvoice({
-    studentId: student.id,
-    payerId: student.payerId,
-    title: input.title || input.lines[0].label,
-    issueDate,
-    dueDate,
-    status: input.draft ? "draft" : "sent",
+  const created = await issueInvoice(ctx, {
+    student, kind: "manual", title: input.title || input.lines[0].label, method: input.method, draft: input.draft, issueDate, dueDate, actorAccountId,
     lines: input.lines.map((l) => ({ label: l.label, amountCents: l.amount, lessonId: l.lessonId ?? null })),
-    createdByAccountId: actorAccountId,
   });
   return toInvoiceDTO(created);
-}
-
-export const paymentSchema = z.object({
-  amount: cents.optional(),
-  method: z.enum(["manual", "cash", "check", "card", "bank_transfer", "other"]).default("manual"),
-  note: z.string().trim().max(500).default(""),
-});
-
-/** Records money the teacher already received. Defaults to the full amount still due. */
-export async function recordPayment(store: PortalStore, invoiceId: string, input: z.infer<typeof paymentSchema>, actorAccountId: string) {
-  const invoice = await store.getInvoice(invoiceId);
-  if (!invoice) throw notFound("That invoice wasn't found.");
-  if (invoice.status === "void" || invoice.status === "draft") throw new ApiError(409, "invoice_not_payable", "Only a sent invoice can be marked paid.");
-  const due = amountDueCents(invoice);
-  if (due <= 0) throw new ApiError(409, "invoice_not_payable", "This invoice has nothing left to pay.");
-  const amountCents = input.amount ?? due;
-  if (amountCents > due) throw new ApiError(400, "invalid_input", "That is more than the amount due.");
-  const payment = await store.recordPayment({ invoiceId, payerId: invoice.payerId, amountCents, method: input.method, note: input.note, recordedByAccountId: actorAccountId });
-  const paid = invoice.amountPaidCents + amountCents;
-  const updated = await store.updateInvoiceStatus(invoiceId, { amountPaidCents: paid, status: derivePaymentStatus(invoice.totalCents, paid, invoice.status) });
-  return { invoice: toInvoiceDTO(updated), payment: toPaymentDTO(payment, [updated]) };
-}
-
-export async function setInvoiceState(store: PortalStore, invoiceId: string, action: "send" | "void") {
-  const invoice = await store.getInvoice(invoiceId);
-  if (!invoice) throw notFound("That invoice wasn't found.");
-  if (action === "void") {
-    if (invoice.amountPaidCents > 0) throw new ApiError(409, "invoice_has_payments", "This invoice has payments recorded, so it can't be voided.");
-    if (invoice.status === "void") return toInvoiceDTO(invoice);
-    return toInvoiceDTO(await store.updateInvoiceStatus(invoiceId, { status: "void" }));
-  }
-  if (invoice.status !== "draft") throw new ApiError(409, "invoice_not_draft", "Only a draft invoice can be issued.");
-  // Issuing makes it visible to the family in the portal. No email is sent.
-  return toInvoiceDTO(await store.updateInvoiceStatus(invoiceId, { status: derivePaymentStatus(invoice.totalCents, invoice.amountPaidCents, "sent") }));
 }

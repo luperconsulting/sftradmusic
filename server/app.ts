@@ -1,17 +1,23 @@
 import { parseNewStudent, createStudent, enrollInvitedStudent } from "./services/students.js";
 import express, { type Request, type Response, type NextFunction } from "express";
-import { randomUUID } from "node:crypto";
+import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
 import { OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvitationPreview, type MePending, type MeResponse, type TeacherStudentRow } from "../shared/portal-types.js";
 import { loadConfig, type ServerConfig } from "./config.js";
 import { ApiError, errorHandler, forbidden, notConfigured, notFound, parse, uuid, wrap } from "./http.js";
 import { memoryRateLimiter, type RateLimiter } from "./rateLimit.js";
 import { assertCanViewStudent, assertSessionAllowed, assertTeacher, canBookFor, canPayFor, type Actor } from "./auth/policy.js";
-import { createCardSetup } from "./integrations/stripeSetup.js";
-import { createInvoice, getStudentBilling, isOutstanding, newInvoiceSchema, paymentSchema, recordPayment, setInvoiceState, toInvoiceDTO } from "./services/billing.js";
-import { cancelLesson, createTeacherLesson, LOCATIONS, rescheduleTeacherLesson, splitLessons, teacherLessonSchema, toLessonDTO } from "./services/lessons.js";
-import { applyReferralCode, autopayEnabledFor, PACKAGE_PURCHASE, purchaseLessonPackage, referralCodeFor, saveAutopayPreference, sendReferral, AUTOPAY_SAVE, assertPreviewSafe } from "./services/previewFeatures.js";
-import { packageLessonsFor } from "../shared/lesson-packages.js";
+import { createStripeCheckout, type CheckoutClient } from "./integrations/stripeCheckout.js";
+import { createGoogleCalendar, type GoogleBusyClient } from "./integrations/googleCalendar.js";
+import { createMailer, type Mailer } from "./mail/mailer.js";
+import { buyPackage, createManualInvoice, getStudentBilling, isOutstanding, issueDraft, markInvoicePaid, markPaidSchema, newInvoiceSchema, packageSchema, paymentSchema, recordPartPayment, toInvoiceDTO, voidInvoice, amountDueCents } from "./services/billing.js";
+import { assertCanBookNew, bookLessons, cancelLesson, LESSON_STEP_MINUTES, lessonSlots, portalBookingSchema, releaseExpiredHolds, rescheduleLesson, rescheduleSchema, splitLessons, teacherLessonSchema, toLessonDTO, weeksFor } from "./services/lessons.js";
+import { applyReferralCode, ensureReferralCode, referralPanel } from "./services/referrals.js";
+import { opsSummary } from "./services/ops.js";
+import { bookingDate, BOOKING_TIMEZONE, startOfBookingDate } from "./services/availability.js";
+import type { PortalContext } from "./services/context.js";
+import { paymentInstructions } from "./services/notify.js";
+import { LESSON_MINUTES } from "../shared/pricing.js";
 import { isEmailOtp } from "../shared/email-otp.js";
 import { assertPortalInviteEmail, hashCredential, INVITE_CODE_TTL_MS, INVITE_TTL_MS, inviteeFullName, newEnrollmentCode, newInviteToken, portalInvitePage } from "./services/invitations.js";
 import { createSupabaseAuthAdmin, createSupabaseStore } from "./store/supabaseStore.js";
@@ -22,6 +28,13 @@ export interface Deps {
   store: PortalStore | null;
   auth: AuthAdmin | null;
   limiter: RateLimiter;
+  mailer: Mailer;
+  /** Google Calendar free/busy (read-only). Null when not configured: open times then fail closed. */
+  google: GoogleBusyClient | null;
+  /** Stripe Checkout in test mode. Null unless CARD_PAYMENTS_ENABLED=true with test keys. */
+  checkout: CheckoutClient | null;
+  /** The clock, replaceable in tests. */
+  now?: () => number;
 }
 
 export function defaultDeps(): Deps {
@@ -31,6 +44,9 @@ export function defaultDeps(): Deps {
     store: config.supabase ? createSupabaseStore(config.supabase.url, config.supabase.serviceRoleKey, config.videoBucket) : null,
     auth: config.supabase ? createSupabaseAuthAdmin(config.supabase.url, config.supabase.serviceRoleKey, config.appUrl) : null,
     limiter: memoryRateLimiter(),
+    mailer: createMailer({ smtp: config.smtp, safeMode: config.safeMode, allowlist: config.safeModeEmailAllowlist }),
+    google: config.google ? createGoogleCalendar(config.google) : null,
+    checkout: config.features.cardPayments && config.stripe ? createStripeCheckout(config.stripe) : null,
   };
 }
 
@@ -44,6 +60,7 @@ const password = z.string().min(12).max(200);
 const noteSchema = z.object({
   studentId: uuid,
   lessonDate: dateOnly,
+  lessonId: uuid.nullable().optional(),
   title: shortText,
   summary: longText,
   technique: longText,
@@ -65,16 +82,6 @@ const assignmentSchema = z.object({
   lessonDate: dateOnly.nullable(),
   studentIds: z.array(uuid).min(1).max(100),
 });
-// Self-booking needs an availability source. Until that lives in Supabase, the teacher books lessons.
-const bookingUnavailable = () =>
-  new ApiError(503, "booking_unavailable", "Online booking isn't available yet. Please contact Zane to schedule or move a lesson.");
-const portalBookingSchema = z.object({
-  studentId: uuid,
-  startTime: z.string().datetime({ offset: true }),
-  location: z.enum(["Music City SF", "Zoom"]),
-  repeatWeekly: z.boolean().optional(),
-});
-
 const inviteSchema = z.object({
   method: z.enum(["email", "code"]).optional(),
   role: z.enum(["guardian", "student"]).optional(),
@@ -93,6 +100,30 @@ export function createApp(deps: Deps) {
     return { store: deps.store, auth: deps.auth };
   };
   const clientKey = (req: Request) => String(req.headers["x-forwarded-for"] ?? req.socket.remoteAddress ?? "unknown").split(",")[0].trim();
+  const now = () => (deps.now ?? Date.now)();
+  const ctx = (): PortalContext => ({ store: needStore().store, mailer: deps.mailer, google: deps.google, appUrl: config.appUrl, now });
+
+  // Stripe (test mode) needs the exact signed bytes, so its webhook is registered before the JSON parser.
+  // Each event is handled once; marking an already-paid invoice paid again changes nothing.
+  app.post("/api/webhooks/stripe", express.raw({ type: "*/*", limit: "1mb" }), wrap(async (req) => {
+    if (!config.features.cardPayments || !deps.checkout || !config.stripeWebhookSecret) throw notFound();
+    const signature = req.header("stripe-signature") ?? "";
+    let event: ReturnType<CheckoutClient["verifyEvent"]>;
+    try {
+      event = deps.checkout.verifyEvent(req.body as Buffer, signature, config.stripeWebhookSecret);
+    } catch {
+      throw new ApiError(400, "invalid_signature", "Signature check failed.");
+    }
+    if (event.type !== "checkout.session.completed") return { received: true };
+    const session = event.data.object as { id?: string; payment_status?: string; metadata?: Record<string, string>; client_reference_id?: string; livemode?: boolean };
+    if (session.livemode) throw new ApiError(400, "live_mode", "Live events are not accepted.");
+    const invoiceId = session.metadata?.invoice_id ?? session.client_reference_id ?? null;
+    if (!invoiceId || session.payment_status !== "paid") return { received: true };
+    const { store } = needStore();
+    if (!(await store.claimStripeEvent(event.id, event.type, invoiceId))) return { received: true, duplicate: true };
+    await markInvoicePaid(ctx(), invoiceId, { method: "card", reference: session.id ?? "", note: "Stripe Checkout (test mode)", actorAccountId: null });
+    return { received: true };
+  }));
 
   app.use(express.json({ limit: "256kb" }));
 
@@ -169,6 +200,31 @@ export function createApp(deps: Deps) {
   };
   const teacherStudents = async (req: Request) => (await needStore().store.listStudents()).filter((s) => ownsStudent(actorOf(req), s));
 
+  // ---- public: the booking page widget's open times ---------------------------------------------------------
+  // The studio's weekly lesson hours minus Google Calendar busy times minus booked or held lessons.
+  app.get("/api/booking/availability", wrap(async (req) => {
+    limiter.hit(`booking-availability:${clientKey(req)}`, 60, 60000);
+    const q = parse(z.object({ from: dateOnly, to: dateOnly }), req.query);
+    const fromMs = startOfBookingDate(q.from), toMs = startOfBookingDate(q.to) + 86400000;
+    if (!(toMs > fromMs) || toMs - fromMs > 31 * 86400000) throw new ApiError(400, "invalid_input", "That date range isn't valid.");
+    const { store } = needStore();
+    const teacherId = await store.studioTeacherAccountId();
+    if (!teacherId) throw new ApiError(503, "availability_unavailable", "Open times can't be checked right now. Please try again shortly.");
+    await releaseExpiredHolds(ctx());
+    const days = await lessonSlots(ctx(), teacherId, q.from, q.to, { durationMinutes: config.bookingSlotMinutes, stepMinutes: config.bookingSlotMinutes });
+    return { timezone: BOOKING_TIMEZONE, slotMinutes: config.bookingSlotMinutes, days };
+  }));
+
+  // ---- ops: read-only summary for the Grok bot, bearer token only ---------------------------------------------
+  app.get("/api/ops/summary", wrap(async (req) => {
+    const header = req.header("authorization") ?? "";
+    const token = header.startsWith("Bearer ") ? header.slice(7) : "";
+    if (!config.opsApiToken || !safeEqual(token, config.opsApiToken)) throw new ApiError(401, "unauthenticated", "A valid ops token is required.");
+    limiter.hit(`ops:${clientKey(req)}`, 60, 60000);
+    await releaseExpiredHolds(ctx());
+    return opsSummary(needStore().store, now());
+  }));
+
   app.get("/api/health", (_req, res) => {
     res.json({ supabase: !!deps.store });
   });
@@ -217,6 +273,7 @@ export function createApp(deps: Deps) {
       }
       if (!userId) userId = await auth.createUser(invite.email, opts.password ?? "", invite.preview.authUserId);
       await store.createAccountForInvitation({ ...invite, studentIds }, userId);
+      return studentIds;
     } catch (e) {
       // A login this request created is removed. An OTP login is left, so a resent code can try again.
       if (userId && !opts.userId) await auth.deleteUser(userId).catch(() => console.error("[api] could not remove partial user"));
@@ -228,18 +285,30 @@ export function createApp(deps: Deps) {
     }
   };
 
+  /** A referral code typed at sign-up. It never blocks the sign-up; a bad code is reported back instead. */
+  const referralAtSignup = async (studentIds: string[], code: string | undefined) => {
+    if (!code?.trim() || studentIds.length !== 1) return null;
+    try {
+      await applyReferralCode(needStore().store, studentIds[0], code);
+      return "applied" as const;
+    } catch {
+      return "invalid" as const;
+    }
+  };
+  const referralField = z.string().trim().max(40).optional();
+
   app.post("/api/invitations/redeem", wrap(async (req) => {
     limiter.hit(`invite-redeem:${clientKey(req)}`, 10, 15 * 60000);
-    const { credential, password: pw } = parse(z.object({ credential: z.string().trim().min(8).max(200), password }), req.body);
+    const { credential, password: pw, referralCode } = parse(z.object({ credential: z.string().trim().min(8).max(200), password, referralCode: referralField }), req.body);
     const { store } = needStore();
     const invite = await findLiveInvite(credential);
-    await completeInvitation(invite, { password: pw });
+    const studentIds = await completeInvitation(invite, { password: pw });
     await store.audit(null, "invitation.redeemed", invite.id);
-    return { email: invite.email };
+    return { email: invite.email, referral: await referralAtSignup(studentIds, referralCode) };
   }));
 
   app.post("/api/invitations/verify-code", wrap(async (req) => {
-    const body = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), code: z.string().trim() }), req.body);
+    const body = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), code: z.string().trim(), referralCode: referralField }), req.body);
     limiter.hit(`invite-code:${clientKey(req)}:${body.email}`, 8, 15 * 60000);
     if (!isEmailOtp(body.code)) throw new ApiError(400, "invalid_code", "Enter the code from the email.");
     const { store, auth } = needStore();
@@ -248,9 +317,9 @@ export function createApp(deps: Deps) {
     if (new Date(invite.expiresAt).getTime() < Date.now()) throw new ApiError(410, "invitation_expired", "This code has expired. Ask Zane to send a new one.");
     const session = await auth.verifyEmailOtp(body.email, body.code);
     if (!session) throw new ApiError(401, "invalid_code", "That code isn't valid or has expired.");
-    await completeInvitation(invite, { userId: session.userId });
+    const studentIds = await completeInvitation(invite, { userId: session.userId });
     await store.audit(null, "invitation.redeemed", invite.id);
-    return { accessToken: session.accessToken, refreshToken: session.refreshToken, email: invite.email };
+    return { accessToken: session.accessToken, refreshToken: session.refreshToken, email: invite.email, referral: await referralAtSignup(studentIds, body.referralCode) };
   }));
 
   // ---- signed-in, any role ---------------------------------------------------------------------------------
@@ -284,6 +353,14 @@ export function createApp(deps: Deps) {
   }));
 
   // ---- student / family ------------------------------------------------------------------------------------
+  const policyFor = async (student: StudentRecord) => {
+    const { store } = needStore();
+    const teacherId = student.teacherAccountId ?? (await store.studioTeacherAccountId());
+    if (!teacherId) return null;
+    const s = await store.getSettings(teacherId);
+    return { zelleRecipient: s.zelleRecipient, holdWindowMinutes: s.holdWindowMinutes, rescheduleNoticeHours: s.rescheduleNoticeHours, cancelNoticeHours: s.cancelNoticeHours };
+  };
+
   app.get("/api/portal/dashboard", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
     const { store } = needStore();
@@ -302,7 +379,8 @@ export function createApp(deps: Deps) {
       assignments: [],
       billing: null,
       packageLessons: 0,
-      autopayEnabled: false,
+      policy: null,
+      referrals: null,
       lessonsAvailable: false,
       canBook: false,
       canPay: false,
@@ -310,24 +388,30 @@ export function createApp(deps: Deps) {
     };
     if (!student) return empty;
     if (isTeacher) await audit(req, "teacher.preview_student", student.id);
-    const [notes, videos, assignments, purchases, autopayRows] = await Promise.all([
+    await releaseExpiredHolds(ctx()).catch((e) => console.error("[api] hold release failed", e instanceof Error ? e.message : ""));
+    const [notes, videos, assignments] = await Promise.all([
       store.listNotes(student.id, { publishedOnly: true }),
       store.listAssignedVideos(student.id),
       store.listAssignments(student.id),
-      store.listAudit(PACKAGE_PURCHASE),
-      store.listAudit(AUTOPAY_SAVE),
     ]);
     let upcoming: DashboardResponse["upcoming"] = [];
     let history: DashboardResponse["history"] = [];
     let billing: DashboardResponse["billing"] = null;
     let lessonsAvailable = false;
-    // One failed read mustn't take notes and videos down with it. A null section shows as "unavailable".
+    let credits = 0;
+    let policy: DashboardResponse["policy"] = null;
+    let referrals: DashboardResponse["referrals"] = null;
+    // One failed read mustn't take the rest down with it. A null section shows as "unavailable".
+    const soft = (what: string) => (e: unknown) => console.error(`[api] ${what} unavailable`, e instanceof Error ? e.message : "");
     await Promise.all([
       store.listLessons({ studentIds: [student.id] }).then((lessons) => {
-        ({ upcoming, history } = splitLessons(lessons));
+        ({ upcoming, history } = splitLessons(lessons, now()));
         lessonsAvailable = true;
-      }).catch((e) => console.error("[api] lessons unavailable", e instanceof Error ? e.message : "")),
-      getStudentBilling(store, student.id).then((b) => { billing = b; }).catch((e) => console.error("[api] billing unavailable", e instanceof Error ? e.message : "")),
+      }).catch(soft("lessons")),
+      getStudentBilling(store, student.id, config.features.cardPayments).then((b) => { billing = b; }).catch(soft("billing")),
+      store.creditBalances([student.id]).then((c) => { credits = c[student.id] ?? 0; }).catch(soft("credits")),
+      policyFor(student).then((p) => { policy = p; }).catch(soft("policy")),
+      referralPanel(store, student.id).then((r) => { referrals = r; }).catch(soft("referrals")),
     ]);
     const body: DashboardResponse = {
       ...empty,
@@ -337,9 +421,10 @@ export function createApp(deps: Deps) {
       notes,
       videos,
       assignments,
-      packageLessons: packageLessonsFor(purchases, student.id),
-      autopayEnabled: autopayEnabledFor(autopayRows, student.id),
-      // Invoices can include siblings and the payer's details, so only payers and the teacher receive them.
+      packageLessons: credits,
+      policy,
+      referrals,
+      // Invoices can include the payer's details, so only payers and the teacher receive them.
       billing: isTeacher || canPayFor(actor, student.id) ? billing : null,
       lessonsAvailable,
       canBook: canBookFor(actor, student.id),
@@ -350,40 +435,111 @@ export function createApp(deps: Deps) {
 
   app.get("/api/lessons/slots", authenticate(), wrap(async (req) => {
     const q = parse(z.object({ studentId: uuid, from: dateOnly, to: dateOnly }), req.query);
-    await loadStudent(req, q.studentId);
-    throw bookingUnavailable();
+    const student = await loadStudent(req, q.studentId);
+    const fromMs = startOfBookingDate(q.from), toMs = startOfBookingDate(q.to);
+    if (!(toMs >= fromMs) || toMs - fromMs > 31 * 86400000) throw new ApiError(400, "invalid_input", "That date range isn't valid.");
+    const { store } = needStore();
+    const teacherId = student.teacherAccountId ?? (await store.studioTeacherAccountId());
+    if (!teacherId) throw new ApiError(503, "no_teacher", "No teacher is set up for lessons yet.");
+    await releaseExpiredHolds(ctx());
+    return { timezone: BOOKING_TIMEZONE, slotMinutes: LESSON_MINUTES, stepMinutes: LESSON_STEP_MINUTES, days: await lessonSlots(ctx(), teacherId, q.from, q.to) };
   }));
 
   app.post("/api/lessons", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
     limiter.hit(`book:${actor.accountId}`, 20, 60 * 60000);
     const input = parse(portalBookingSchema, req.body);
-    await loadStudent(req, input.studentId);
+    const student = await loadStudent(req, input.studentId);
     if (!canBookFor(actor, input.studentId)) throw forbidden("This account can't book lessons for this student.");
-    // The balance gate still runs first, from Supabase, so an unpaid family sees the right reason.
-    const billing = await getStudentBilling(needStore().store, input.studentId);
-    if (billing.bookingBlocked) throw new ApiError(402, "outstanding_balance", OUTSTANDING_BALANCE_MESSAGE);
-    throw bookingUnavailable();
+    await releaseExpiredHolds(ctx());
+    await assertCanBookNew(ctx(), student.id);
+    const result = await bookLessons(ctx(), { student, startTime: input.startTime, location: input.location, weeks: weeksFor(input), actorAccountId: actor.accountId, source: "portal" });
+    await audit(req, "lesson.book", student.id, { count: result.lessons.length, seriesId: result.seriesId });
+    return result;
   }));
+
+  const loadFamilyLesson = async (req: Request, lessonId: string) => {
+    const lesson = await needStore().store.getLesson(lessonId);
+    if (!lesson) throw notFound("That lesson wasn't found.");
+    const student = await loadStudent(req, lesson.studentId);
+    const actor = actorOf(req);
+    if (actor.role !== "teacher" && !canBookFor(actor, lesson.studentId)) throw forbidden("This account can't change lessons for this student.");
+    return { lesson, student };
+  };
 
   app.post("/api/lessons/:lessonId/reschedule", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
+    if (actor.role === "teacher") throw forbidden("Use the teacher calendar to move lessons.");
     limiter.hit(`book:${actor.accountId}`, 20, 60 * 60000);
-    const input = parse(portalBookingSchema, req.body);
-    await loadStudent(req, input.studentId);
-    if (!canBookFor(actor, input.studentId)) throw forbidden("This account can't change lessons for this student.");
-    throw bookingUnavailable();
+    const input = parse(rescheduleSchema, req.body);
+    const { lesson, student } = await loadFamilyLesson(req, parse(uuid, req.params.lessonId));
+    await releaseExpiredHolds(ctx());
+    const moved = await rescheduleLesson(ctx(), { lessonId: lesson.id, startTime: input.startTime, location: input.location, actorAccountId: actor.accountId, byTeacher: false, student });
+    await audit(req, "lesson.reschedule", moved.id, { from: lesson.id });
+    return { lesson: moved };
   }));
 
-  // The portal takes no payments yet. Invoices are paid outside it and the teacher records the payment.
-  app.post("/api/invoices/:invoiceId/send-payment-link", authenticate(), wrap(async (req) => {
+  app.post("/api/lessons/:lessonId/cancel", authenticate(), wrap(async (req) => {
     const actor = actorOf(req);
-    limiter.hit(`pay:${actor.accountId}`, 5, 15 * 60000);
-    const invoiceId = parse(uuid, req.params.invoiceId);
-    const invoice = await needStore().store.getInvoice(invoiceId);
-    if (!invoice || !canPayFor(actor, invoice.studentId)) throw forbidden();
+    if (actor.role === "teacher") throw forbidden("Use the teacher calendar to cancel lessons.");
+    const { reason } = parse(z.object({ reason: z.string().trim().max(500).optional() }), req.body ?? {});
+    const { lesson, student } = await loadFamilyLesson(req, parse(uuid, req.params.lessonId));
+    const result = await cancelLesson(ctx(), { lessonId: lesson.id, reason: reason || null, actorAccountId: actor.accountId, byTeacher: false, student });
+    await audit(req, "lesson.cancel", lesson.id, { late: result.late });
+    return result;
+  }));
+
+  /** A family's own invoice. Teachers use the teacher routes. */
+  const loadPayableInvoice = async (req: Request) => {
+    const actor = actorOf(req);
+    const invoice = await needStore().store.getInvoice(parse(uuid, req.params.invoiceId));
+    if (!invoice || actor.role === "teacher" || !canPayFor(actor, invoice.studentId) || invoice.status === "draft") throw forbidden();
+    return invoice;
+  };
+
+  // Zelle and cash are paid offline. This returns the instructions; the teacher marks the invoice paid.
+  app.get("/api/invoices/:invoiceId/instructions", authenticate(), wrap(async (req) => {
+    const invoice = await loadPayableInvoice(req);
+    const student = await needStore().store.getStudent(invoice.studentId);
+    const policy = student ? await policyFor(student) : null;
+    return { invoice: toInvoiceDTO(invoice), instructions: paymentInstructions(invoice, { zelleRecipient: policy?.zelleRecipient ?? "" }), zelleRecipient: policy?.zelleRecipient ?? "", cardPayments: config.features.cardPayments };
+  }));
+  // Kept for the existing Pay Now button: it now answers with the offline instructions.
+  app.post("/api/invoices/:invoiceId/send-payment-link", authenticate(), wrap(async (req) => {
+    const invoice = await loadPayableInvoice(req);
     if (!isOutstanding(toInvoiceDTO(invoice))) throw new ApiError(409, "invoice_not_payable", "This invoice has nothing left to pay.");
-    throw new ApiError(503, "payment_link_unavailable", "Paying from the portal isn't available yet. Please pay Zane directly; your balance updates once the payment is recorded.");
+    const student = await needStore().store.getStudent(invoice.studentId);
+    const policy = student ? await policyFor(student) : null;
+    return { sent: false, suppressed: false, offline: true, invoiceId: invoice.id, amountDue: amountDueCents(invoice) / 100, instructions: paymentInstructions(invoice, { zelleRecipient: policy?.zelleRecipient ?? "" }) };
+  }));
+
+  // Card payments (Stripe test mode). Hidden and refused unless CARD_PAYMENTS_ENABLED=true.
+  app.post("/api/invoices/:invoiceId/checkout", authenticate(), wrap(async (req) => {
+    if (!config.features.cardPayments || !deps.checkout) throw new ApiError(404, "card_payments_off", "Card payments aren't available.");
+    const actor = actorOf(req);
+    limiter.hit(`pay:${actor.accountId}`, 10, 15 * 60000);
+    const invoice = await loadPayableInvoice(req);
+    const due = amountDueCents(invoice);
+    if (!isOutstanding(toInvoiceDTO(invoice)) || due <= 0) throw new ApiError(409, "invoice_not_payable", "This invoice has nothing left to pay.");
+    const base = config.appUrl.replace(/\/$/, "");
+    const session = await deps.checkout.createSession({
+      invoiceId: invoice.id, invoiceNumber: invoice.number, amountCents: due, label: invoice.kind === "package" ? "4-lesson package" : invoice.kind === "session" ? "60-min lesson" : invoice.title || "Invoice",
+      successUrl: `${base}/portal?paid=${invoice.id}`, cancelUrl: `${base}/portal`,
+    });
+    await needStore().store.setInvoiceStripeSession(invoice.id, session.id);
+    return { url: session.url };
+  }));
+
+  app.post("/api/packages/purchase", authenticate(), wrap(async (req) => {
+    const actor = actorOf(req);
+    limiter.hit(`pay:${actor.accountId}`, 10, 15 * 60000);
+    const input = parse(packageSchema, req.body);
+    if (actor.role === "teacher" || !canPayFor(actor, input.studentId)) throw forbidden();
+    const student = await loadStudent(req, input.studentId);
+    const { invoice, existing } = await buyPackage(ctx(), student, input.method, actor.accountId, config.features.cardPayments);
+    const policy = await policyFor(student);
+    if (!existing) await audit(req, "package.invoice", invoice.id, { method: input.method });
+    return { invoice: toInvoiceDTO(invoice), existing, instructions: paymentInstructions(invoice, { zelleRecipient: policy?.zelleRecipient ?? "" }), creditsAdded: invoice.status === "paid" ? invoice.packageLessons : 0 };
   }));
 
   app.get("/api/videos/:id/playback", authenticate(), wrap(async (req) => {
@@ -416,64 +572,20 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  app.post("/api/packages/purchase", authenticate(), wrap(async (req) => {
-    assertPreviewSafe(config.features.packages, config.safeMode);
-    const actor = actorOf(req);
-    const input = parse(z.object({ studentId: uuid, packageId: z.string().trim().min(1).max(80) }), req.body);
-    if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
-    await loadStudent(req, input.studentId);
-    return purchaseLessonPackage(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, packageId: input.packageId, enabled: true, safeMode: true });
-  }));
-
-  app.post("/api/autopay", authenticate(), wrap(async (req) => {
-    assertPreviewSafe(config.features.autopay, config.safeMode);
-    const actor = actorOf(req);
-    const input = parse(z.object({ studentId: uuid, enabled: z.boolean() }), req.body);
-    if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
-    await loadStudent(req, input.studentId);
-    const saved = await saveAutopayPreference(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, enabled: input.enabled, safeMode: true, featureOn: true });
-    if (!input.enabled) return { ...saved, charged: false as const, cardSaving: !!config.stripe, checkoutUrl: null };
-    const setup = await createCardSetup({ keys: config.stripe, safeMode: true, studentId: input.studentId, appUrl: config.appUrl });
-    return { ...saved, charged: false as const, cardSaving: setup.available, checkoutUrl: setup.url, setupIntentId: setup.setupIntentId };
-  }));
-
   app.get("/api/referrals", authenticate(), wrap(async (req) => {
-    const actor = actorOf(req);
     const studentId = parse(uuid, req.query.studentId);
     await loadStudent(req, studentId);
-    const invites = (await needStore().store.listAudit("referral.invite")).filter((row) => row.target === studentId);
-    return { code: referralCodeFor(studentId), invites: invites.map((row) => ({ email: String(row.meta.email ?? ""), allowlisted: row.meta.allowlisted === true })) };
-  }));
-
-  app.post("/api/referrals/invite", authenticate(), wrap(async (req) => {
-    assertPreviewSafe(config.features.referrals, config.safeMode);
-    const actor = actorOf(req);
-    const input = parse(z.object({ email: z.string().trim().toLowerCase().email().max(200), studentId: uuid.optional() }), req.body);
-    const studentId = input.studentId ?? null;
-    if (actor.role !== "teacher") {
-      if (!studentId) throw new ApiError(400, "invalid_input", "Choose a student for this referral.");
-      await loadStudent(req, studentId);
-    } else if (studentId) {
-      await loadStudent(req, studentId);
-    }
-    return sendReferral(needStore().store, {
-      actorAccountId: actor.accountId,
-      email: input.email,
-      studentId,
-      enabled: true,
-      safeMode: true,
-      allowlist: config.safeModeEmailAllowlist,
-      appUrl: config.appUrl,
-      smtp: config.smtp,
-    });
+    return referralPanel(needStore().store, studentId);
   }));
 
   app.post("/api/referrals/apply", authenticate(), wrap(async (req) => {
-    assertPreviewSafe(config.features.referrals, config.safeMode);
     const actor = actorOf(req);
     const input = parse(z.object({ studentId: uuid, code: z.string().trim().min(4).max(40) }), req.body);
+    if (actor.role !== "teacher" && !canPayFor(actor, input.studentId)) throw forbidden();
     await loadStudent(req, input.studentId);
-    return applyReferralCode(needStore().store, { actorAccountId: actor.accountId, studentId: input.studentId, code: input.code, enabled: true, safeMode: true });
+    const referral = await applyReferralCode(needStore().store, input.studentId, input.code);
+    await audit(req, "referral.apply", input.studentId, { referralId: referral.id });
+    return { ok: true, discountCents: referral.discountCents };
   }));
 
   // ---- teacher ---------------------------------------------------------------------------------------------
@@ -482,16 +594,16 @@ export function createApp(deps: Deps) {
 
   teacher.get("/students", wrap(async (req) => {
     const { store } = needStore();
-    const now = Date.now();
     const students = await teacherStudents(req);
-    const [counts, accounts, purchases, lessons] = await Promise.all([
+    const ids = students.map((s) => s.id);
+    const [counts, accounts, credits, lessons] = await Promise.all([
       store.studentCounts(),
       store.studentAccounts(),
-      store.listAudit(PACKAGE_PURCHASE),
-      store.listLessons({ studentIds: students.map((s) => s.id), from: new Date(now).toISOString() }),
+      store.creditBalances(ids),
+      store.listLessons({ studentIds: ids, from: new Date(now()).toISOString(), statuses: ["scheduled", "pending_payment"] }),
     ]);
     const nextByStudent: Record<string, string> = {};
-    for (const l of lessons) if (l.status === "scheduled") nextByStudent[l.studentId] ??= new Date(l.startsAt).toISOString();
+    for (const l of lessons) nextByStudent[l.studentId] ??= new Date(l.startsAt).toISOString();
     const rows: TeacherStudentRow[] = students.map((s) => ({
       ...publicStudent(s),
       email: s.email,
@@ -499,7 +611,7 @@ export function createApp(deps: Deps) {
       noteCount: counts[s.id]?.notes ?? 0,
       videoCount: counts[s.id]?.videos ?? 0,
       assignmentCount: counts[s.id]?.assignments ?? 0,
-      packageLessons: packageLessonsFor(purchases, s.id),
+      packageLessons: credits[s.id] ?? 0,
       accountId: accounts[s.id]?.accountId ?? null,
       portalStatus: accounts[s.id]?.status ?? "none",
       transferPending: false,
@@ -509,25 +621,33 @@ export function createApp(deps: Deps) {
 
   teacher.post("/students", wrap(async (req) => {
     const input = parseNewStudent(req.body);
+    const referralCode = parse(z.string().trim().max(40).optional(), (req.body as any)?.referralCode || undefined);
     const { store } = needStore();
     const { student, guardian } = await createStudent(store, input, actorOf(req).accountId);
-    await audit(req, "student.create", student.id, { guardian });
-    return { student: { id: student.id, fullName: student.fullName }, guardian };
+    await ensureReferralCode(store, student.id);
+    let referral: "applied" | "invalid" | null = null;
+    if (referralCode) {
+      try { await applyReferralCode(store, student.id, referralCode); referral = "applied"; } catch { referral = "invalid"; }
+    }
+    await audit(req, "student.create", student.id, { guardian, referral });
+    return { student: { id: student.id, fullName: student.fullName }, guardian, referral };
   }));
   teacher.get("/students/:id", wrap(async (req) => {
     const student = await loadStudent(req, parse(uuid, req.params.id));
     const { store } = needStore();
-    const [notes, videos, assignments, purchases] = await Promise.all([
+    await releaseExpiredHolds(ctx());
+    const [notes, videos, assignments, credits] = await Promise.all([
       store.listNotes(student.id, { publishedOnly: false }),
       store.listAssignedVideos(student.id),
       store.listAssignments(student.id),
-      store.listAudit(PACKAGE_PURCHASE),
+      store.creditBalances([student.id]),
     ]);
-    const [lessons, billing] = await Promise.all([
+    const [lessons, billing, referrals] = await Promise.all([
       store.listLessons({ studentIds: [student.id] }).then((rows) => rows.map(toLessonDTO)).catch(() => null),
       getStudentBilling(store, student.id).catch(() => null),
+      referralPanel(store, student.id).catch(() => null),
     ]);
-    return { student: publicStudent(student), notes, videos, assignments, lessons, billing, packageLessons: packageLessonsFor(purchases, student.id) };
+    return { student: publicStudent(student), notes, videos, assignments, lessons, billing, packageLessons: credits[student.id] ?? 0, referrals };
   }));
 
   teacher.get("/overview", wrap(async (req) => {
@@ -539,11 +659,12 @@ export function createApp(deps: Deps) {
   teacher.get("/calendar", wrap(async (req) => {
     const q = parse(z.object({ from: z.coerce.number().int(), to: z.coerce.number().int() }), req.query);
     if (q.to <= q.from || q.to - q.from > 31 * 86400000) throw new ApiError(400, "invalid_input", "That date range isn't valid.");
+    await releaseExpiredHolds(ctx());
     const students = await teacherStudents(req);
     const byId = new Map(students.map((s) => [s.id, s]));
     const lessons = await needStore().store.listLessons({ studentIds: [...byId.keys()], from: new Date(q.from).toISOString(), to: new Date(q.to).toISOString() });
     return {
-      events: lessons.filter((l) => l.status === "scheduled" || l.status === "completed").map((l) => {
+      events: lessons.filter((l) => l.status === "scheduled" || l.status === "pending_payment" || l.status === "completed").map((l) => {
         const dto = toLessonDTO(l);
         return {
           id: l.id,
@@ -552,6 +673,7 @@ export function createApp(deps: Deps) {
           title: `Lesson: ${byId.get(l.studentId)?.fullName ?? ""}`,
           address: l.location,
           status: dto.status,
+          holdExpiresAt: l.holdExpiresAt,
           studentId: l.studentId,
           studentName: byId.get(l.studentId)?.fullName ?? "",
         };
@@ -560,34 +682,79 @@ export function createApp(deps: Deps) {
   }));
 
   teacher.post("/lessons", wrap(async (req) => {
-    const input = parse(teacherLessonSchema, req.body);
+    const input = parse(teacherLessonSchema.extend({ repeatWeekly: z.boolean().optional(), weeks: z.number().int().min(2).max(12).optional() }), req.body);
     const student = await loadStudent(req, input.studentId);
-    const lesson = await createTeacherLesson(needStore().store, student, input, actorOf(req).accountId);
-    await audit(req, "lesson.create", lesson.id, { studentId: student.id });
-    return { lesson };
+    const result = await bookLessons(ctx(), { student, startTime: input.startTime, location: input.location, weeks: weeksFor(input), actorAccountId: actorOf(req).accountId, source: "teacher" });
+    await audit(req, "lesson.create", student.id, { count: result.lessons.length });
+    return { lesson: result.lessons[0], lessons: result.lessons, invoiceIds: result.invoiceIds };
   }));
   const loadTeacherLesson = async (req: Request) => {
     const lesson = await needStore().store.getLesson(parse(uuid, req.params.id));
     if (!lesson) throw notFound("That lesson wasn't found.");
-    await loadStudent(req, lesson.studentId);
-    return lesson;
+    const student = await loadStudent(req, lesson.studentId);
+    return { lesson, student };
   };
   teacher.post("/lessons/:id/reschedule", wrap(async (req) => {
-    const input = parse(z.object({ startTime: z.string().datetime({ offset: true }), minutes: z.number().int().min(15).max(240).optional(), location: z.enum(Object.keys(LOCATIONS) as [keyof typeof LOCATIONS]).optional() }), req.body);
-    const current = await loadTeacherLesson(req);
-    const lesson = await rescheduleTeacherLesson(needStore().store, current.id, input, actorOf(req).accountId);
+    const input = parse(rescheduleSchema, req.body);
+    const { lesson: current, student } = await loadTeacherLesson(req);
+    const lesson = await rescheduleLesson(ctx(), { lessonId: current.id, startTime: input.startTime, location: input.location, actorAccountId: actorOf(req).accountId, byTeacher: true, student });
     await audit(req, "lesson.reschedule", lesson.id, { from: current.id });
     return { lesson };
   }));
   teacher.post("/lessons/:id/cancel", wrap(async (req) => {
     const { reason } = parse(z.object({ reason: z.string().trim().max(500).optional() }), req.body ?? {});
-    const current = await loadTeacherLesson(req);
-    const lesson = await cancelLesson(needStore().store, current.id, reason || null, actorOf(req).accountId);
-    await audit(req, "lesson.cancel", lesson.id);
-    return { lesson };
+    const { lesson: current, student } = await loadTeacherLesson(req);
+    const result = await cancelLesson(ctx(), { lessonId: current.id, reason: reason || null, actorAccountId: actorOf(req).accountId, byTeacher: true, student });
+    await audit(req, "lesson.cancel", current.id);
+    return result;
+  }));
+
+  // Weekly lesson hours, hold window, notice windows and the Zelle recipient.
+  const hoursSchema = z.array(z.object({ weekday: z.number().int().min(0).max(6), startMinute: z.number().int().min(0).max(1439), endMinute: z.number().int().min(1).max(1440) })
+    .refine((h) => h.endMinute - h.startMinute >= LESSON_MINUTES, "A block must fit at least one 60-minute lesson.")).max(50);
+  teacher.get("/studio", wrap(async (req) => {
+    const { store } = needStore();
+    const id = actorOf(req).accountId;
+    const [settings, hours] = await Promise.all([store.getSettings(id), store.listLessonHours(id)]);
+    return { settings, hours };
+  }));
+  teacher.put("/studio", wrap(async (req) => {
+    const input = parse(z.object({
+      holdWindowMinutes: z.number().int().min(15).max(10080).optional(),
+      rescheduleNoticeHours: z.number().int().min(0).max(336).optional(),
+      cancelNoticeHours: z.number().int().min(0).max(336).optional(),
+      zelleRecipient: z.string().trim().max(200).optional(),
+      hours: hoursSchema.optional(),
+    }), req.body);
+    const { store } = needStore();
+    const id = actorOf(req).accountId;
+    const { hours, ...settingsPatch } = input;
+    if (hours) {
+      const sorted = [...hours].sort((a, b) => a.weekday - b.weekday || a.startMinute - b.startMinute);
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].weekday === sorted[i - 1].weekday && sorted[i].startMinute < sorted[i - 1].endMinute) throw new ApiError(400, "invalid_input", "Lesson hours on the same day can't overlap.");
+      }
+    }
+    const settings = await store.saveSettings(id, settingsPatch);
+    const saved = hours ? await store.replaceLessonHours(id, hours) : await store.listLessonHours(id);
+    await audit(req, "studio.update", id, { hours: hours?.length ?? null });
+    return { settings, hours: saved };
+  }));
+
+  teacher.get("/referrals", wrap(async (req) => {
+    const { store } = needStore();
+    const students = await teacherStudents(req);
+    const name = new Map(students.map((s) => [s.id, s.fullName]));
+    const [referrals, credits] = await Promise.all([store.listReferrals({}), store.listReferralCredits(students.map((s) => s.id))]);
+    const mine = referrals.filter((r) => name.has(r.referrerStudentId) || name.has(r.referredStudentId));
+    return {
+      referrals: mine.map((r) => ({ id: r.id, referrer: name.get(r.referrerStudentId) ?? "", referred: name.get(r.referredStudentId) ?? "", code: r.code, status: r.status, createdAt: r.createdAt, completedAt: r.completedAt })),
+      credits: credits.map((c) => ({ student: name.get(c.studentId) ?? "", amount: c.amountCents / 100, used: !!c.usedInvoiceId, createdAt: c.createdAt })),
+    };
   }));
 
   teacher.get("/invoices", wrap(async (req) => {
+    await releaseExpiredHolds(ctx());
     const students = await teacherStudents(req);
     const invoices = await needStore().store.listInvoices({ studentIds: students.map((s) => s.id), includeDrafts: true });
     return { invoices: invoices.map(toInvoiceDTO), total: invoices.length };
@@ -595,7 +762,7 @@ export function createApp(deps: Deps) {
   teacher.post("/invoices", wrap(async (req) => {
     const input = parse(newInvoiceSchema, req.body);
     const student = await loadStudent(req, input.studentId);
-    const invoice = await createInvoice(needStore().store, student, input, actorOf(req).accountId);
+    const invoice = await createManualInvoice(ctx(), student, input, actorOf(req).accountId);
     await audit(req, "invoice.create", invoice.id, { studentId: student.id });
     return { invoice };
   }));
@@ -608,25 +775,31 @@ export function createApp(deps: Deps) {
   teacher.post("/invoices/:id/payments", wrap(async (req) => {
     const input = parse(paymentSchema, req.body ?? {});
     const invoice = await loadTeacherInvoice(req);
-    const result = await recordPayment(needStore().store, invoice.id, input, actorOf(req).accountId);
-    await audit(req, "invoice.payment_recorded", invoice.id, { paymentId: result.payment.id });
+    const result = await recordPartPayment(ctx(), invoice.id, input, actorOf(req).accountId);
+    await audit(req, "invoice.payment_recorded", invoice.id, { paymentId: result.payment?.id ?? null });
     return result;
   }));
-  // Supabase changes only. Nothing is emailed or charged.
+  // Zelle or cash received offline: records the payment, marks the invoice paid, adds package credits or
+  // confirms the held session. Repeating it changes nothing.
   teacher.post("/invoices/:id/mark-paid", wrap(async (req) => {
+    const input = parse(markPaidSchema, req.body ?? {});
     const invoice = await loadTeacherInvoice(req);
-    const result = await recordPayment(needStore().store, invoice.id, { method: "manual", note: "Marked paid by the teacher" }, actorOf(req).accountId);
-    await audit(req, "invoice.mark-paid", invoice.id, { paymentId: result.payment.id });
+    const result = await markInvoicePaid(ctx(), invoice.id, { method: input.method, paidAt: input.paidAt, reference: input.reference, note: "Marked paid by the teacher", actorAccountId: actorOf(req).accountId });
+    if (!result.alreadyPaid) await audit(req, "invoice.mark-paid", invoice.id, { method: input.method });
     return { ok: true, suppressed: false, ...result };
   }));
-  for (const action of ["send", "void"] as const) {
-    teacher.post(`/invoices/:id/${action}`, wrap(async (req) => {
-      const invoice = await loadTeacherInvoice(req);
-      const updated = await setInvoiceState(needStore().store, invoice.id, action);
-      await audit(req, `invoice.${action}`, invoice.id);
-      return { ok: true, suppressed: false, invoice: updated };
-    }));
-  }
+  teacher.post("/invoices/:id/send", wrap(async (req) => {
+    const invoice = await loadTeacherInvoice(req);
+    const updated = await issueDraft(ctx(), invoice.id);
+    await audit(req, "invoice.send", invoice.id);
+    return { ok: true, suppressed: false, invoice: updated };
+  }));
+  teacher.post("/invoices/:id/void", wrap(async (req) => {
+    const invoice = await loadTeacherInvoice(req);
+    const updated = await voidInvoice(ctx(), invoice.id);
+    await audit(req, "invoice.void", invoice.id);
+    return { ok: true, suppressed: false, invoice: updated };
+  }));
   teacher.post("/invoices/:id/remind", wrap(async (req) => {
     const invoice = await loadTeacherInvoice(req);
     // Reminders are not sent yet. The request is logged so nothing goes out by surprise.
@@ -819,7 +992,11 @@ export function createApp(deps: Deps) {
     return { ok: true };
   }));
 
-  teacher.get("/settings", wrap(async () => ({ integrations: { supabase: !!deps.store, storage: !!deps.store }, cardSaving: !!config.stripe, referralMail: !!config.smtp })));
+  teacher.get("/settings", wrap(async () => ({
+    integrations: { supabase: !!deps.store, storage: !!deps.store, googleCalendar: !!deps.google, email: !!config.smtp },
+    cardPayments: config.features.cardPayments,
+    safeMode: config.safeMode,
+  })));
 
   app.use("/api/teacher", teacher);
 
@@ -835,3 +1012,9 @@ function publicStudent(s: StudentRecord) {
 }
 
 export { isOutstanding, OUTSTANDING_BALANCE_MESSAGE };
+
+/** Constant-time comparison for the ops token. */
+function safeEqual(a: string, b: string) {
+  const x = Buffer.from(a), y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}

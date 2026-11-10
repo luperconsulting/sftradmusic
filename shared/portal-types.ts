@@ -2,11 +2,8 @@
 export type Role = "teacher" | "guardian" | "student";
 
 export interface Features {
-  packages: boolean;
-  autopay: boolean;
-  referrals: boolean;
-  recurring: boolean;
-  invoiceActions: boolean;
+  /** Stripe Checkout in test mode for packages and sessions. Off unless CARD_PAYMENTS_ENABLED=true. */
+  cardPayments: boolean;
 }
 
 /** What /api/me returns before the session has passed 2FA: just enough to choose the next screen. */
@@ -45,6 +42,10 @@ export interface LessonDTO {
   isZoom: boolean;
   /** The lesson this one replaced, when it was rescheduled. */
   rescheduledFromId?: string | null;
+  /** Set while the lesson is held for payment ("pending_payment"). */
+  holdExpiresAt?: string | null;
+  invoiceId?: string | null;
+  lateCancel?: boolean;
 }
 
 export interface NoteDTO {
@@ -107,8 +108,11 @@ export interface InvoiceDTO {
   contactName: string;
   studentId: string;
   lines: { label: string; amount: number }[];
-  /** Always null: the portal does not take payments yet. */
+  /** Always null. Card payments, when on, go through POST /api/invoices/:id/checkout. */
   payUrl: string | null;
+  kind?: "package" | "session" | "manual";
+  /** The offline method the family chose: Zelle ($380 package) or cash ($375 package). */
+  paymentMethod?: "zelle" | "cash" | "card" | null;
 }
 
 export interface PaymentDTO {
@@ -119,6 +123,26 @@ export interface PaymentDTO {
   method: string;
   status: "pending" | "succeeded" | "failed" | "refunded";
   paidAt: string;
+  reference?: string;
+}
+
+export interface ReferralPanelDTO {
+  code: string;
+  totalReferred: number;
+  pending: { name: string; since: string }[];
+  completed: { name: string; completedAt: string }[];
+  creditsEarnedCents: number;
+  creditsUsedCents: number;
+  creditsAvailableCents: number;
+  /** The code this student signed up with, if any, and whether its $15 discount is still to come. */
+  referredBy: { code: string; discountPending: boolean } | null;
+}
+
+export interface StudioPolicyDTO {
+  zelleRecipient: string;
+  holdWindowMinutes: number;
+  rescheduleNoticeHours: number;
+  cancelNoticeHours: number;
 }
 
 export interface BillingDTO {
@@ -139,10 +163,12 @@ export interface DashboardResponse {
   notes: NoteDTO[];
   videos: AssignedVideoDTO[];
   assignments: PracticeAssignmentDTO[];
-  /** Lesson credits from placeholder package purchases. Zero means none have been recorded. */
+  /** Lesson credits left: 4 per paid package, 1 used per booked lesson. */
   packageLessons: number;
-  /** Preview autopay preference. This is not a saved card. */
-  autopayEnabled: boolean;
+  /** The teacher's payment and notice rules, including the Zelle recipient. Null when not readable. */
+  policy: StudioPolicyDTO | null;
+  /** The referral side panel. Null when not readable. */
+  referrals: ReferralPanelDTO | null;
   /** null means billing could not be read. The UI must never present that as a zero balance. */
   billing: BillingDTO | null;
   /** Lessons read from Supabase. false means lesson data is unavailable, not empty. */

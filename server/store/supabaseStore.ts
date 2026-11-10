@@ -2,7 +2,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { AssignedVideoDTO, InvitationDTO, NoteDTO, PracticeAssignmentDTO, VideoDTO } from "../../shared/portal-types.js";
 import { ApiError } from "../http.js";
 import { inviteRateLimitSeconds } from "../services/invitations.js";
-import type { AccountRecord, AuthAdmin, InvitationRecord, InvoiceRecord, LessonRecord, PaymentRecord, PortalStore, StudentRecord } from "./types.js";
+import type { AccountRecord, AuthAdmin, InvitationRecord, InvoiceRecord, LessonRecord, PaymentRecord, PortalStore, ReferralCreditRecord, ReferralRecord, StudentRecord, StudioSettings } from "./types.js";
 
 const PLAYBACK_TTL_SECONDS = 15 * 60;
 
@@ -54,13 +54,47 @@ const toLesson = (r: any): LessonRecord => ({
   cancellationReason: r.cancellation_reason,
   rescheduledFromId: r.rescheduled_from_id,
   createdAt: r.created_at,
+  holdExpiresAt: r.hold_expires_at ?? null,
+  invoiceId: r.invoice_id ?? null,
+  seriesId: r.series_id ?? null,
+  lateCancel: r.late_cancel === true,
 });
+const toSettings = (teacherAccountId: string, r: any): StudioSettings => ({
+  teacherAccountId,
+  holdWindowMinutes: r?.hold_window_minutes ?? 1440,
+  rescheduleNoticeHours: r?.reschedule_notice_hours ?? 24,
+  cancelNoticeHours: r?.cancel_notice_hours ?? 24,
+  zelleRecipient: r?.zelle_recipient ?? "",
+  timezone: r?.timezone ?? "America/Los_Angeles",
+});
+const toReferral = (r: any): ReferralRecord => ({
+  id: r.id,
+  referrerStudentId: r.referrer_student_id,
+  referredStudentId: r.referred_student_id,
+  code: r.code,
+  status: r.status,
+  discountCents: r.discount_cents,
+  discountInvoiceId: r.discount_invoice_id,
+  completedAt: r.completed_at,
+  createdAt: r.created_at,
+});
+const toReferralCredit = (r: any): ReferralCreditRecord => ({
+  id: r.id,
+  referralId: r.referral_id,
+  studentId: r.student_id,
+  amountCents: r.amount_cents,
+  usedInvoiceId: r.used_invoice_id,
+  usedAt: r.used_at,
+  createdAt: r.created_at,
+});
+const isUniqueViolation = (error: { code?: string } | null) => error?.code === "23505";
 const toInvoice = (r: any): InvoiceRecord => ({
   id: r.id,
   number: Number(r.number),
   studentId: r.student_id,
   payerId: r.payer_id,
   payerName: r.billing_contacts?.full_name ?? "",
+  payerEmail: r.billing_contacts?.email ?? null,
   title: r.title,
   currency: r.currency,
   totalCents: r.total_cents,
@@ -72,6 +106,9 @@ const toInvoice = (r: any): InvoiceRecord => ({
   lines: [...(r.invoice_lines ?? [])]
     .sort((a: any, b: any) => a.position - b.position)
     .map((l: any) => ({ label: l.label, amountCents: l.amount_cents, lessonId: l.lesson_id })),
+  kind: r.kind ?? "manual",
+  paymentMethodChoice: r.payment_method_choice ?? null,
+  packageLessons: r.package_lessons ?? 0,
 });
 const toPayment = (r: any): PaymentRecord => ({
   id: r.id,
@@ -82,8 +119,9 @@ const toPayment = (r: any): PaymentRecord => ({
   status: r.status,
   paidAt: r.paid_at,
   note: r.note,
+  reference: r.reference ?? "",
 });
-const INVOICE_SELECT = "*, billing_contacts(full_name), invoice_lines(label, amount_cents, lesson_id, position)";
+const INVOICE_SELECT = "*, billing_contacts(full_name, email), invoice_lines(label, amount_cents, lesson_id, position)";
 const toNote = (r: any): NoteDTO => ({
   id: r.id,
   studentId: r.student_id,
@@ -234,6 +272,8 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       if (query.teacherAccountId) q = q.eq("teacher_account_id", query.teacherAccountId);
       if (query.from) q = q.gte("starts_at", query.from);
       if (query.to) q = q.lt("starts_at", query.to);
+      if (query.createdFrom) q = q.gte("created_at", query.createdFrom);
+      if (query.statuses) q = q.in("status", query.statuses);
       return (must(await q) as any[]).map(toLesson);
     },
     async getLesson(id) {
@@ -241,7 +281,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       return r ? toLesson(r) : null;
     },
     async createLesson(input) {
-      const row: any = must(await db.from("lessons").insert({
+      const res = await db.from("lessons").insert({
         student_id: input.studentId,
         teacher_account_id: input.teacherAccountId,
         starts_at: input.startsAt,
@@ -251,7 +291,14 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         zoom_url: input.zoomUrl,
         created_by_account_id: input.createdByAccountId,
         rescheduled_from_id: input.rescheduledFromId ?? null,
-      }).select("*").single());
+        status: input.status ?? "scheduled",
+        hold_expires_at: input.holdExpiresAt ?? null,
+        invoice_id: input.invoiceId ?? null,
+        series_id: input.seriesId ?? null,
+      }).select("*").single();
+      // 23P01: the exclusion constraint caught an overlapping live lesson for this teacher.
+      if (res.error?.code === "23P01") throw new ApiError(409, "slot_unavailable", "That time was just taken. Please choose another.");
+      const row: any = must(res);
       const booking = await db.from("bookings").insert({ lesson_id: row.id, student_id: input.studentId, booked_by_account_id: input.createdByAccountId, source: input.source });
       if (booking.error) {
         await db.from("lessons").delete().eq("id", row.id);
@@ -262,11 +309,129 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
     async closeLesson(id, input) {
       const now = new Date().toISOString();
       const patch = input.status === "cancelled"
-        ? { status: "cancelled", cancelled_at: now, cancelled_by_account_id: input.byAccountId, cancellation_reason: input.reason, updated_at: now }
-        : { status: "rescheduled", updated_at: now };
+        ? { status: "cancelled", cancelled_at: now, cancelled_by_account_id: input.byAccountId, cancellation_reason: input.reason, late_cancel: input.lateCancel === true, hold_expires_at: null, updated_at: now }
+        : { status: input.status, hold_expires_at: null, updated_at: now };
       const row = must(await db.from("lessons").update(patch).eq("id", id).select("*").single());
-      if (input.status === "cancelled") must(await db.from("bookings").update({ status: "cancelled" }).eq("lesson_id", id));
+      if (input.status !== "rescheduled") must(await db.from("bookings").update({ status: "cancelled" }).eq("lesson_id", id));
       return toLesson(row);
+    },
+    async updateLesson(id, patch) {
+      const row = must(await db.from("lessons").update({
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.holdExpiresAt !== undefined ? { hold_expires_at: patch.holdExpiresAt } : {}),
+        ...(patch.invoiceId !== undefined ? { invoice_id: patch.invoiceId } : {}),
+        updated_at: new Date().toISOString(),
+      }).eq("id", id).select("*").single());
+      return toLesson(row);
+    },
+    async listLessonsByInvoice(invoiceId) {
+      return (must(await db.from("lessons").select("*").eq("invoice_id", invoiceId)) as any[]).map(toLesson);
+    },
+    async listExpiredHolds(now) {
+      // A hold ends at its expiry, which is never later than the lesson start.
+      return (must(await db.from("lessons").select("*").eq("status", "pending_payment").lte("hold_expires_at", now)) as any[]).map(toLesson);
+    },
+    async createSeries(input) {
+      const row: any = must(await db.from("lesson_series").insert({ student_id: input.studentId, teacher_account_id: input.teacherAccountId, created_by_account_id: input.createdByAccountId }).select("id").single());
+      return row.id;
+    },
+    async getSettings(teacherAccountId) {
+      const r = must(await db.from("studio_settings").select("*").eq("teacher_account_id", teacherAccountId).maybeSingle());
+      return toSettings(teacherAccountId, r);
+    },
+    async saveSettings(teacherAccountId, patch) {
+      const row = {
+        teacher_account_id: teacherAccountId,
+        ...(patch.holdWindowMinutes !== undefined ? { hold_window_minutes: patch.holdWindowMinutes } : {}),
+        ...(patch.rescheduleNoticeHours !== undefined ? { reschedule_notice_hours: patch.rescheduleNoticeHours } : {}),
+        ...(patch.cancelNoticeHours !== undefined ? { cancel_notice_hours: patch.cancelNoticeHours } : {}),
+        ...(patch.zelleRecipient !== undefined ? { zelle_recipient: patch.zelleRecipient } : {}),
+        updated_at: new Date().toISOString(),
+      };
+      return toSettings(teacherAccountId, must(await db.from("studio_settings").upsert(row, { onConflict: "teacher_account_id" }).select("*").single()));
+    },
+    async listLessonHours(teacherAccountId) {
+      const rows = must(await db.from("lesson_hours").select("weekday, start_minute, end_minute").eq("teacher_account_id", teacherAccountId).order("weekday").order("start_minute")) as any[];
+      return rows.map((r) => ({ weekday: r.weekday, startMinute: r.start_minute, endMinute: r.end_minute }));
+    },
+    async replaceLessonHours(teacherAccountId, rows) {
+      must(await db.from("lesson_hours").delete().eq("teacher_account_id", teacherAccountId));
+      if (rows.length) must(await db.from("lesson_hours").insert(rows.map((r) => ({ teacher_account_id: teacherAccountId, weekday: r.weekday, start_minute: r.startMinute, end_minute: r.endMinute }))));
+      return this.listLessonHours(teacherAccountId);
+    },
+    async creditBalances(studentIds) {
+      const out: Record<string, number> = Object.fromEntries(studentIds.map((id) => [id, 0]));
+      if (!studentIds.length) return out;
+      const rows = must(await db.from("credit_ledger").select("student_id, delta").in("student_id", studentIds)) as any[];
+      for (const r of rows) out[r.student_id] = (out[r.student_id] ?? 0) + r.delta;
+      return out;
+    },
+    async addCredit(input) {
+      const { error } = await db.from("credit_ledger").insert({
+        student_id: input.studentId, delta: input.delta, reason: input.reason,
+        invoice_id: input.invoiceId ?? null, lesson_id: input.lessonId ?? null, created_by_account_id: input.byAccountId ?? null,
+      });
+      if (isUniqueViolation(error)) return false;
+      must({ data: null, error });
+      return true;
+    },
+    async getReferralCode(studentId) {
+      const r: any = must(await db.from("referral_codes").select("code").eq("student_id", studentId).maybeSingle());
+      return r?.code ?? null;
+    },
+    async saveReferralCode(studentId, code) {
+      const { error } = await db.from("referral_codes").insert({ student_id: studentId, code });
+      if (!isUniqueViolation(error)) must({ data: null, error });
+    },
+    async findStudentByReferralCode(code) {
+      const r: any = must(await db.from("referral_codes").select("student_id").eq("code", code.toUpperCase()).maybeSingle());
+      return r?.student_id ?? null;
+    },
+    async createReferral(input) {
+      const { data, error } = await db.from("referrals").insert({
+        referrer_student_id: input.referrerStudentId, referred_student_id: input.referredStudentId, code: input.code, discount_cents: input.discountCents,
+      }).select("*").single();
+      if (isUniqueViolation(error)) return null;
+      return toReferral(must({ data, error }));
+    },
+    async getReferralForReferred(studentId) {
+      const r = must(await db.from("referrals").select("*").eq("referred_student_id", studentId).maybeSingle());
+      return r ? toReferral(r) : null;
+    },
+    async listReferrals(query) {
+      if (query.referrerStudentIds && !query.referrerStudentIds.length) return [];
+      let q = db.from("referrals").select("*").order("created_at", { ascending: false });
+      if (query.referrerStudentIds) q = q.in("referrer_student_id", query.referrerStudentIds);
+      return (must(await q) as any[]).map(toReferral);
+    },
+    async updateReferral(id, patch) {
+      must(await db.from("referrals").update({
+        ...(patch.status ? { status: patch.status } : {}),
+        ...(patch.discountInvoiceId !== undefined ? { discount_invoice_id: patch.discountInvoiceId } : {}),
+        ...(patch.completedAt !== undefined ? { completed_at: patch.completedAt } : {}),
+      }).eq("id", id));
+    },
+    async createReferralCredit(input) {
+      const { error } = await db.from("referral_credits").insert({ referral_id: input.referralId, student_id: input.studentId, amount_cents: input.amountCents });
+      if (isUniqueViolation(error)) return false;
+      must({ data: null, error });
+      return true;
+    },
+    async listReferralCredits(studentIds) {
+      if (!studentIds.length) return [];
+      return (must(await db.from("referral_credits").select("*").in("student_id", studentIds).order("created_at")) as any[]).map(toReferralCredit);
+    },
+    async setReferralCreditUsed(id, invoiceId) {
+      must(await db.from("referral_credits").update({ used_invoice_id: invoiceId, used_at: invoiceId ? new Date().toISOString() : null }).eq("id", id));
+    },
+    async setInvoiceStripeSession(invoiceId, sessionId) {
+      must(await db.from("invoices").update({ stripe_checkout_session_id: sessionId }).eq("id", invoiceId));
+    },
+    async claimStripeEvent(id, type, invoiceId) {
+      const { error } = await db.from("stripe_events").insert({ id, type, invoice_id: invoiceId });
+      if (isUniqueViolation(error)) return false;
+      must({ data: null, error });
+      return true;
     },
     async listInvoices(query) {
       if (query.studentIds && !query.studentIds.length) return [];
@@ -280,7 +445,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       return r ? toInvoice(r) : null;
     },
     async createInvoice(input) {
-      const total = input.lines.reduce((sum, l) => sum + l.amountCents, 0);
+      const total = Math.max(0, input.lines.reduce((sum, l) => sum + l.amountCents, 0));
       const row: any = must(await db.from("invoices").insert({
         student_id: input.studentId,
         payer_id: input.payerId,
@@ -290,6 +455,9 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         issue_date: input.issueDate,
         due_date: input.dueDate,
         created_by_account_id: input.createdByAccountId,
+        kind: input.kind ?? "manual",
+        payment_method_choice: input.paymentMethodChoice ?? null,
+        package_lessons: input.packageLessons ?? 0,
       }).select("id").single());
       const lines = await db.from("invoice_lines").insert(input.lines.map((l, position) => ({ invoice_id: row.id, label: l.label, amount_cents: l.amountCents, lesson_id: l.lessonId, position })));
       if (lines.error) {
@@ -319,6 +487,8 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         amount_cents: input.amountCents,
         method: input.method,
         note: input.note,
+        reference: input.reference ?? "",
+        ...(input.paidAt ? { paid_at: input.paidAt } : {}),
         recorded_by_account_id: input.recordedByAccountId,
       }).select("*").single()));
     },
