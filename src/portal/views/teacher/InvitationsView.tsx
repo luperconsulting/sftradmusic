@@ -10,7 +10,7 @@ export default function InvitationsView({ v }: { v: VM }) {
       <section style={{ background: "#fff", border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", padding: "28px", display: "flex", flexDirection: "column", gap: "18px" }}>
         <div>
           <h2 style={{ fontFamily: "'Cinzel',Georgia,serif", fontWeight: "500", fontSize: "14px", letterSpacing: ".14em", textTransform: "uppercase", color: "#1D2A44", margin: "0 0 6px" }}>Invite a student</h2>
-          <p style={{ fontSize: "13px", color: "rgba(17,22,27,.6)", margin: "0", lineHeight: "1.6" }}>Enter an email and, if you have it, their name. They receive a one-time code, enter it on the invite page, then choose a password and turn on two-factor authentication. The code expires in one hour.</p>
+          <p style={{ fontSize: "13px", color: "rgba(17,22,27,.6)", margin: "0", lineHeight: "1.6" }}>Enter an email and, if you have it, their name and the student it's for. They receive a one-time code, enter it on the invite page, then choose a password and turn on two-factor authentication. The code expires in one hour.</p>
         </div>
         <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
           <span style={label}>Email</span>
@@ -20,9 +20,24 @@ export default function InvitationsView({ v }: { v: VM }) {
           <span style={label}>Name <span style={{ fontWeight: "400", textTransform: "none", letterSpacing: "0", color: "rgba(17,22,27,.45)" }}>(optional)</span></span>
           <input className="dc-f6" placeholder="Full name" value={v.invName ?? ""} onChange={v.setInvName} style={field} />
         </label>
-        <button className="dc-h3" onClick={v.sendInvite} style={{ alignSelf: "flex-start", background: "#1D2A44", color: "#fff", border: "0", borderRadius: "2px", padding: "12px 20px", fontFamily: "'Cinzel',Georgia,serif", fontSize: "11px", letterSpacing: ".2em", textTransform: "uppercase", fontWeight: "600", cursor: "pointer", display: "flex", alignItems: "center", gap: "8px" }}>
-          <i className="ph ph-paper-plane-tilt"></i> Invite
+        <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+          <span style={label}>Student <span style={{ fontWeight: "400", textTransform: "none", letterSpacing: "0", color: "rgba(17,22,27,.45)" }}>(optional)</span></span>
+          <select className="dc-f6" aria-label="Link to student" value={v.invStudentId ?? ""} onChange={v.setInvStudent} style={field}>
+            <option value="">No student yet (an adult is enrolled when they sign up)</option>
+            {(v.invStudentOptions ?? []).map((o: any) => (
+              <option key={o.id} value={o.id}>{o.label}{o.linked ? " · has an account" : ""}</option>
+            ))}
+          </select>
+          <span style={{ fontSize: "12px", color: "rgba(17,22,27,.55)", lineHeight: "1.5" }}>Pick an adult to link the account as that student, or a child to invite their parent and link the child. Left blank, an email that matches a student on file is linked automatically.</span>
+        </label>
+        <button className="dc-h3" onClick={v.sendInvite} disabled={v.invSending} aria-busy={v.invSending} style={{ alignSelf: "flex-start", background: "#1D2A44", color: "#fff", border: "0", borderRadius: "2px", padding: "12px 20px", fontFamily: "'Cinzel',Georgia,serif", fontSize: "11px", letterSpacing: ".2em", textTransform: "uppercase", fontWeight: "600", cursor: v.invSending ? "default" : "pointer", opacity: v.invSending ? ".7" : "1", display: "flex", alignItems: "center", gap: "8px" }}>
+          <i className="ph ph-paper-plane-tilt"></i> {v.invSending ? "Sending…" : "Invite"}
         </button>
+        {v.invStatus && v.invStatus.kind !== "sending" && (
+          <div role={v.invStatus.kind === "error" ? "alert" : "status"} style={{ fontSize: "13px", lineHeight: "1.5", padding: "10px 12px", borderRadius: "2px", background: v.invStatus.kind === "error" ? "rgba(156,95,34,.08)" : "rgba(74,97,73,.08)", color: v.invStatus.kind === "error" ? "#9C5F22" : "#4A6149" }}>
+            {v.invStatus.text}
+          </div>
+        )}
       </section>
       <section style={{ gridColumn: "span 2", minWidth: "0", background: "#fff", border: "1px solid rgba(17,22,27,.1)", borderRadius: "2px", overflowX: "auto" }}>
         <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "14px", minWidth: "640px" }}>

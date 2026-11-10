@@ -91,6 +91,8 @@ export function useTeacherVM(screen: string): VM {
   const [invEmail, setInvEmail] = useState("");
   const [invName, setInvName] = useState("");
   const [invStudentId, setInvStudentId] = useState("");
+  // Inline result under the invite form, so the outcome stays visible (the toast alone was easy to miss).
+  const [invStatus, setInvStatus] = useState<{ kind: "sending" | "ok" | "error"; text: string } | null>(null);
   const [migrateBill, setMigrateBill] = useState("student");
   const contentRef = useRef<HTMLDivElement>(null);
   const file = useRef<File | null>(null);
@@ -352,6 +354,7 @@ export function useTeacherVM(screen: string): VM {
   // Choosing a student loads what's on their record, so the details aren't typed twice.
   const chooseInvStudent = useCallback((id: string, rows: TeacherStudentRow[]) => {
     setInvStudentId(id);
+    setInvStatus(null);
     const s = rows.find((r) => r.id === id);
     if (!s) return;
     setInvRole(s.isMinor ? "Parent / guardian" : "Adult student");
@@ -599,23 +602,37 @@ export function useTeacherVM(screen: string): VM {
     roleOpts: [["Parent / guardian", "A child", "ph ph-baby"], ["Adult student", "An adult", "ph ph-user"]].map(([r, label, icon]) => ({ label, icon, on: invRole === r, pick: () => setInvRole(r), bg: invRole === r ? "#1D2A44" : "transparent", color: invRole === r ? "#fff" : "rgba(17,22,27,.7)" })),
     isChild: !isAdult, isAdult, roleHint: isAdult ? "The student owns the account: they sign in, see their notes and pay their own invoices." : "The parent owns the account: they sign in, see notes and pay invoices. Siblings can share one login.",
     invEmail, setInvEmail: (e: any) => setInvEmail(e.target.value), invName, setInvName: (e: any) => setInvName(e.target.value), invStudentId, setInvStudent: (e: any) => chooseInvStudent(e.target.value, students),
-    sendInvite: guard(async () => {
+    invStatus, invSending: invStatus?.kind === "sending",
+    // Students the account can be linked to: an adult links as that student; a child's invite goes to the parent.
+    invStudentOptions: students.map((s) => ({ id: s.id, label: s.isMinor ? `${s.fullName} · child (invite the parent)` : `${s.fullName} · adult`, linked: s.portalStatus !== "none" })),
+    sendInvite: async () => {
+      if (invStatus?.kind === "sending") return;
       const email = invEmail.trim();
-      if (!email.includes("@")) return flash("Enter a valid email address.");
+      if (!email.includes("@")) return setInvStatus({ kind: "error", text: "Enter a valid email address." });
       const name = invName.trim();
-      // An invite started from a student's row is for that student; a minor's goes to the guardian.
+      // A picked student is linked when the invite is accepted; a minor's invite goes to the guardian.
       const forStudent = students.find((s) => s.id === invStudentId);
-      const created: InvitationDTO = await afterInviteAttempt(api("/teacher/invitations", { method: "POST", body: {
-        email, ...(name ? { name } : {}),
-        ...(forStudent ? { studentIds: [forStudent.id], role: forStudent.isMinor ? "guardian" : "student" } : {}),
-      } }));
-      const page = `${window.location.origin}/invite`;
-      copy(page);
-      setInvEmail("");
-      setInvName("");
-      setInvStudentId("");
-      flash(`A one-time code was emailed to ${email}. They enter it at ${page}, then choose a password and turn on two-factor authentication.`);
-    }),
+      setInvStatus({ kind: "sending", text: "Sending the invitation…" });
+      try {
+        const created: InvitationDTO = await afterInviteAttempt(api("/teacher/invitations", { method: "POST", body: {
+          email, ...(name ? { name } : {}),
+          ...(forStudent ? { studentIds: [forStudent.id], role: forStudent.isMinor ? "guardian" : "student" } : {}),
+        } }));
+        // Show the new row at once; the re-read above replaces it with the server's list.
+        setInvites((rows) => [created, ...rows.filter((r) => r.id !== created.id && !(r.email === created.email && (r.status === "pending" || r.status === "code_issued")))]);
+        const page = `${window.location.origin}/invite`;
+        copy(page);
+        setInvEmail("");
+        setInvName("");
+        setInvStudentId("");
+        const linkedTo = created.studentName && created.studentName !== "Not enrolled yet" ? ` It will link to ${created.studentName}.` : "";
+        const text = `Invitation sent to ${created.email}.${linkedTo} They enter the emailed code at ${page}, then choose a password and turn on two-factor authentication.`;
+        setInvStatus({ kind: "ok", text });
+        flash(`Invitation sent to ${created.email}.`);
+      } catch (e) {
+        setInvStatus({ kind: "error", text: errorText(e) });
+      }
+    },
     // Migrate
     migrateBilling: [["student", "The student", "Invoices go to the new adult account.", "ph ph-user"], ["parent", "Keep the parent / guardian", "The student gets their own login; invoices stay addressed to the parent.", "ph ph-users"]].map(([id, title, subtitle, icon]) => ({ title, sub: subtitle, icon, on: migrateBill === id, pick: () => setMigrateBill(id), border: migrateBill === id ? "#1D2A44" : "rgba(17,22,27,.12)", bg: migrateBill === id ? "rgba(29,42,68,.05)" : "#fff" })),
     doMigrate: () => flash("Account transfers need the billing change reviewed first. Use Zane's checklist for now."),

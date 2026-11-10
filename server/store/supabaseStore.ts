@@ -842,7 +842,11 @@ export function createSupabaseAuthAdmin(url: string, serviceRoleKey: string, app
     },
     async verifyEmailOtp(email, code) {
       const { data, error } = await admin.auth.verifyOtp({ email, token: code, type: "email" });
-      if (error || !data.session || !data.user) return null;
+      if (error || !data.session || !data.user) {
+        // The reason only (GoTrue error code / status), never the code or the address.
+        console.warn(`[auth] email code rejected by Supabase: ${error?.code ?? (error ? `status ${error.status ?? "unknown"}` : "no session returned")}`);
+        return null;
+      }
       return { userId: data.user.id, accessToken: data.session.access_token, refreshToken: data.session.refresh_token };
     },
     async deleteUser(userId) {

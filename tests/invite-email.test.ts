@@ -89,15 +89,24 @@ describe("portal invitation email", () => {
     expect(sendPortalInvite).not.toHaveBeenCalled();
   });
 
-  it("does not create a student when the teacher invites", async () => {
-    const { post, sendPortalInvite, createInvitation, createStudent, createContact } = teacherApp({ safeMode: true });
-    const res = await post({ email: "LuperDev@gmail.com", name: "Arzo Luper" });
+  it("does not create a student when the teacher invites someone not on the roster", async () => {
+    const { post, sendPortalInvite, createInvitation, createStudent, createContact } = teacherApp({ safeMode: true, allowlist: ["luperdev+new@gmail.com"] });
+    const res = await post({ email: "LuperDev+New@gmail.com", name: "Arzo Luper" });
     expect(res.status).toBe(200);
     expect(res.body.studentName).toBe("Not enrolled yet");
-    expect(sendPortalInvite).toHaveBeenCalledWith(ARZO, res.body.inviteUrl);
+    expect(sendPortalInvite).toHaveBeenCalledWith("luperdev+new@gmail.com", res.body.inviteUrl);
     expect(createInvitation.mock.calls[0][0].studentIds).toEqual([]);
     expect(createStudent).not.toHaveBeenCalled();
     expect(createContact).not.toHaveBeenCalled();
+  });
+
+  it("links the existing adult student with that email instead of leaving the account 'Not enrolled yet'", async () => {
+    const { post, createInvitation, createStudent } = teacherApp({ safeMode: true });
+    const res = await post({ email: "LuperDev@gmail.com", name: "Arzo Luper" });
+    expect(res.status).toBe(200);
+    expect(res.body.studentName).toBe("Arzo Luper");
+    expect(createInvitation.mock.calls[0][0]).toMatchObject({ role: "student", studentIds: [STUDENT_A] });
+    expect(createStudent).not.toHaveBeenCalled();
   });
 
   it("creates no invitation when Supabase does not accept the email", async () => {
@@ -140,7 +149,8 @@ describe("portal invitation email", () => {
     expect(hashes[0]).not.toBe(hashes[1]);
     expect(revokePendingForEmail).toHaveBeenCalledWith(ARZO, "inv-arzo");
     expect(sendPortalInvite).toHaveBeenCalledTimes(2);
-    expect(createInvitation.mock.calls.every((c: any) => c[0].studentIds.length === 0)).toBe(true);
+    // Arzo is already on the roster with this email, so both rows link that student.
+    expect(createInvitation.mock.calls.map((c: any) => c[0].studentIds)).toEqual([[STUDENT_A], [STUDENT_A]]);
   });
 
   it("a revoked code cannot be used to sign up", async () => {
@@ -206,15 +216,26 @@ describe("accepting an invitation", () => {
     expect(releaseInvitation).toHaveBeenCalledWith("i");
   });
 
-  it("refuses to enroll a second student with Arzo's email", async () => {
+  it("links Arzo's existing student row instead of enrolling a second student with the same email", async () => {
     const createStudent = vi.fn();
-    const releaseInvitation = vi.fn(async () => undefined);
-    const deps = buildDeps({}, { findInvitationByHash: async () => invite, claimInvitation: async () => true, releaseInvitation, createStudent } as any);
+    const createAccountForInvitation = vi.fn(async () => undefined);
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite, claimInvitation: async () => true, createStudent, createAccountForInvitation } as any);
+    (deps.auth as any).createUser = vi.fn(async () => "auth-user");
+    const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: token, password: "a-long-enough-password" });
+    expect(res.status).toBe(200);
+    expect(createStudent).not.toHaveBeenCalled();
+    expect((createAccountForInvitation.mock.calls as any)[0][0].studentIds).toEqual([STUDENT_A]);
+  });
+
+  it("refuses a duplicate before anything is claimed when the email belongs to a student who already has an account", async () => {
+    const createStudent = vi.fn();
+    const claimInvitation = vi.fn(async () => true);
+    const deps = buildDeps({}, { findInvitationByHash: async () => invite, claimInvitation, createStudent, studentAccounts: async () => ({ [STUDENT_A]: { accountId: "acct", status: "active" as const } }) } as any);
     (deps.auth as any).createUser = vi.fn();
     const res = await request(createApp(deps)).post("/api/invitations/redeem").send({ credential: token, password: "a-long-enough-password" });
     expect(res.status).toBe(409);
+    expect(claimInvitation).not.toHaveBeenCalled();
     expect(createStudent).not.toHaveBeenCalled();
-    expect(releaseInvitation).toHaveBeenCalledWith("i");
   });
 });
 

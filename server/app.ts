@@ -1,4 +1,4 @@
-import { parseNewStudent, createStudent, enrollInvitedStudent } from "./services/students.js";
+import { parseNewStudent, createStudent, enrollInvitedStudent, assertNotDuplicate } from "./services/students.js";
 import express, { type Request, type Response, type NextFunction } from "express";
 import { randomUUID, timingSafeEqual } from "node:crypto";
 import { z } from "zod";
@@ -255,13 +255,52 @@ export function createApp(deps: Deps) {
     return preview;
   }));
 
-  const completeInvitation = async (invite: Awaited<ReturnType<typeof findLiveInvite>>, opts: { userId?: string; password?: string }) => {
+  /** Server log line for a refused invitation step. Never includes the code, token or email. */
+  const logInviteRejection = (step: string, reason: string, inviteId?: string) =>
+    console.warn(`[invite] ${step} rejected: ${reason}${inviteId ? ` (invitation ${inviteId})` : ""}`);
+
+  /**
+   * Everything that could refuse an invitation, checked before the one-time code is spent. Without this, a code
+   * that Supabase had already accepted could be refused afterwards (for example "already enrolled"), and every
+   * retry of that same code would then fail as "isn't valid or has expired".
+   * Returns the students the new account will be linked to, or null when a new adult student will be created.
+   */
+  const prepareInvitation = async (invite: Awaited<ReturnType<typeof findLiveInvite>>): Promise<string[] | null> => {
+    const { store } = needStore();
+    if (invite.studentIds.length) {
+      const found = await store.getStudents(invite.studentIds);
+      if (found.length !== invite.studentIds.length) throw new ApiError(409, "invitation_student_missing", "The student on this invitation no longer exists. Ask Zane to send a new invitation.");
+      return invite.studentIds;
+    }
+    // An adult invited by email who is already on the roster is linked to that student, not enrolled twice.
+    const existing = await matchStudentsForEmail(invite.email, "student");
+    if (existing.length) return existing.map((s) => s.id);
+    await store.checkStudentSchema();
+    assertNotDuplicate(await store.listStudents(), { fullName: inviteeFullName(invite.name, invite.email), isMinor: false, email: invite.email.toLowerCase(), guardianName: null, guardianEmail: null, format: "In person" });
+    return null;
+  };
+
+  /**
+   * Students on the roster for this email that don't have a portal account yet: the adult whose own email it is
+   * (role student), or the children whose guardian email it is (role guardian).
+   */
+  const matchStudentsForEmail = async (email: string, role: "guardian" | "student") => {
+    const { store } = needStore();
+    const [students, accounts] = await Promise.all([store.listStudents(), store.studentAccounts()]);
+    const e = email.trim().toLowerCase();
+    return students.filter((s) => !accounts[s.id] && (role === "student"
+      ? !s.isMinor && (s.email ?? "").trim().toLowerCase() === e
+      : s.isMinor && (s.guardianEmail ?? "").trim().toLowerCase() === e));
+  };
+
+  const completeInvitation = async (invite: Awaited<ReturnType<typeof findLiveInvite>>, opts: { userId?: string; password?: string; planned?: string[] | null }) => {
     const { store, auth } = needStore();
+    const planned = opts.planned !== undefined ? opts.planned : await prepareInvitation(invite);
     if (!(await store.claimInvitation(invite.id))) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
     let userId: string | null = opts.userId ?? null;
     let createdStudentId: string | null = null;
     try {
-      let studentIds = invite.studentIds;
+      let studentIds = planned ?? [];
       // The student row does not exist until the code is confirmed. It is created in Supabase only.
       if (studentIds.length === 0) {
         const enrolled = await enrollInvitedStudent(store, {
@@ -314,11 +353,36 @@ export function createApp(deps: Deps) {
     if (!isEmailOtp(body.code)) throw new ApiError(400, "invalid_code", "Enter the code from the email.");
     const { store, auth } = needStore();
     const invite = await store.findPendingInvitationByEmail(body.email);
-    if (!invite) throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
-    if (new Date(invite.expiresAt).getTime() < Date.now()) throw new ApiError(410, "invitation_expired", "This code has expired. Ask Zane to send a new one.");
+    if (!invite) {
+      logInviteRejection("verify-code", "no pending invitation for this email");
+      throw new ApiError(404, "invalid_invitation", "That code isn't valid or has already been used.");
+    }
+    if (new Date(invite.expiresAt).getTime() < Date.now()) {
+      logInviteRejection("verify-code", "invitation expired", invite.id);
+      throw new ApiError(410, "invitation_expired", "This code has expired. Ask Zane to send a new one.");
+    }
+    // Check everything that could refuse the sign-up while the code is still unused, so the same code still
+    // works once the problem is fixed.
+    let planned: string[] | null;
+    try {
+      planned = await prepareInvitation(invite);
+    } catch (e) {
+      logInviteRejection("verify-code", `account setup check failed before the code was used: ${e instanceof ApiError ? e.code : "error"}`, invite.id);
+      throw e;
+    }
     const session = await auth.verifyEmailOtp(body.email, body.code);
-    if (!session) throw new ApiError(401, "invalid_code", "That code isn't valid or has expired.");
-    const studentIds = await completeInvitation(invite, { userId: session.userId });
+    if (!session) {
+      logInviteRejection("verify-code", "Supabase did not accept the email code (wrong, already used, replaced by a newer code, or expired)", invite.id);
+      throw new ApiError(401, "invalid_code", "That code isn't valid or has expired.");
+    }
+    let studentIds: string[];
+    try {
+      studentIds = await completeInvitation(invite, { userId: session.userId, planned });
+    } catch (e) {
+      logInviteRejection("verify-code", `account setup failed after the code was accepted: ${e instanceof ApiError ? e.code : "error"}`, invite.id);
+      if (e instanceof ApiError && e.status < 500) throw e;
+      throw new ApiError(503, "invite_setup_failed", "Your code was accepted, but your account couldn't be set up. Ask Zane to resend your invitation.");
+    }
     await store.audit(null, "invitation.redeemed", invite.id);
     return { accessToken: session.accessToken, refreshToken: session.refreshToken, email: invite.email, referral: await referralAtSignup(studentIds, body.referralCode) };
   }));
@@ -932,8 +996,11 @@ export function createApp(deps: Deps) {
   const issueInvite = async (req: Request, input: { email: string; name: string; method: "email" | "code"; role: "guardian" | "student"; studentIds: string[] }) => {
     const { store, auth } = needStore();
     if (input.method === "email") assertPortalInviteEmail(config.safeMode, input.email, config.safeModeEmailAllowlist);
-    const linked = input.studentIds.length ? await store.getStudents(input.studentIds) : [];
-    if (input.studentIds.length && linked.length !== input.studentIds.length) throw notFound("That student wasn't found.");
+    // No student chosen: link the roster students this email already belongs to (an adult's own email, or the
+    // children whose guardian email it is), so the new account isn't left "Not enrolled yet".
+    const studentIds = input.studentIds.length ? input.studentIds : (await matchStudentsForEmail(input.email, input.role)).map((s) => s.id);
+    const linked = studentIds.length ? await store.getStudents(studentIds) : [];
+    if (studentIds.length && linked.length !== studentIds.length) throw notFound("That student wasn't found.");
     // A minor's invitation always goes to the guardian, and a guardian invitation needs the child it's for.
     const role = linked.some((s) => s.isMinor) ? "guardian" : input.role;
     if (role === "guardian" && !linked.length) throw new ApiError(400, "invalid_input", "Choose the student this parent or guardian is for.");
@@ -958,7 +1025,7 @@ export function createApp(deps: Deps) {
       email: input.email,
       name: input.name.trim() || fullName,
       role,
-      studentIds: input.studentIds,
+      studentIds,
       expiresAt: new Date(Date.now() + (input.method === "email" ? INVITE_CODE_TTL_MS : INVITE_TTL_MS)).toISOString(),
       preview: {
         firstName: fullName.split(/\s+/)[0] || fullName,
