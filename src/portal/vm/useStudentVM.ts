@@ -4,7 +4,7 @@ import { formatMoney, PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRAL_DISCOUNT_CE
 import { invoiceMemo, OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type PaymentReportDTO, type SlotsResponse, type ZelleDetailsDTO } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
 import { useAuth } from "../auth/AuthContext";
-import { clock, copy, fmt, fmtDay, fullDate, greeting, money, TZ, todayLabel, useToast, useViewport } from "./common";
+import { bookingMonthRange, clock, copy, dateGrid, fmt, fmtDay, fullDate, greeting, initialsOf, money, TZ, todayLabel, useToast, useViewport } from "./common";
 import { useSecurity } from "./useSecurity";
 import type { VM } from "./types";
 
@@ -114,19 +114,15 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   const readOnly = !!data?.readOnly;
 
   // Available lesson times for the month in view
-  const monthBase = useMemo(() => {
-    const now = new Date();
-    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + bkMonth, 1));
-  }, [bkMonth]);
+  // Months are counted in studio time, so a Los Angeles evening on the 30th still opens that month.
+  const monthRange = useMemo(() => bookingMonthRange(bkMonth), [bkMonth]);
+  const monthBase = monthRange.base;
   const dialogKind = dialog?.kind;
   useEffect(() => {
     if (dialogKind !== "book" || !student) return;
     let live = true;
-    const y = monthBase.getUTCFullYear(), m = monthBase.getUTCMonth();
-    const today = new Date().toISOString().slice(0, 10);
-    const first = `${y}-${pad(m + 1)}-01`;
-    const from = first < today ? today : first;
-    const to = `${y}-${pad(m + 1)}-${pad(new Date(Date.UTC(y, m + 1, 0)).getUTCDate())}`;
+    // Today in the studio's time zone (the UTC date is already tomorrow on a Los Angeles evening).
+    const { from, to } = monthRange;
     setSlots(null);
     setSlotError("");
     api<SlotsResponse>(`/lessons/slots?studentId=${student.id}&from=${from}&to=${to}`)
@@ -138,7 +134,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       })
       .catch((e) => live && setSlotError(errorText(e)));
     return () => { live = false; };
-  }, [dialogKind, student?.id, monthBase, slotTick]);
+  }, [dialogKind, student?.id, monthRange, slotTick]);
 
   const billing = data?.billing ?? null;
   const unpaid = !!billing?.bookingBlocked;
@@ -417,8 +413,9 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     locOpts: [["Music City SF", "ph ph-map-pin"], ["Zoom", "ph ph-video-camera"]].map(([l, icon]) => ({
       label: l, icon, on: bkLoc === l, pick: () => setBkLoc(l), bg: bkLoc === l ? "#1D2A44" : "transparent", color: bkLoc === l ? "#fff" : "rgba(17,22,27,.7)",
     })),
-    dates: Array.from({ length: 16 }, (_, i) => {
-      const d = days[i];
+    // Every open date in the month (it used to stop at 16, which dropped late-month dates such as Nov 28 and 30),
+    // padded to full rows of 8.
+    dates: dateGrid(days).map((d) => {
       if (!d) return { dow: "", day: "", blank: true, vis: "hidden", cursor: "default", border: "transparent", bg: "transparent", color: "transparent", pick: () => {} };
       const on = d === bkDay;
       return {
@@ -444,6 +441,20 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     setWeeks: (e: any) => setBkWeeks(Number(e.target.value) || SERIES_WEEKS_DEFAULT),
     priceLine: `60-minute lesson · ${SESSION_PRICE}`,
     creditLine: `${credits} lesson credit${credits === 1 ? "" : "s"} left. ${EACH_LESSON}`,
+    // Shown as soon as the dialog opens: an unpaid balance or an unpaid session hold blocks new bookings.
+    blocked: !rsLesson && !bkResult && (unpaid || upcomingOpen.some((l) => l.status === "pending_payment")),
+    blockedText: upcomingOpen.some((l) => l.status === "pending_payment")
+      ? "You have a lesson waiting for payment. Please pay that invoice before booking another lesson."
+      : "You have an outstanding balance. Please complete payment before scheduling another lesson.",
+    blockedPay: () => {
+      const held = upcomingOpen.find((l) => l.status === "pending_payment" && l.invoiceId);
+      const inv = held ? allInvoices.find((i) => i.id === held.invoiceId) : firstOpen;
+      openPay(inv ?? undefined);
+    },
+    // No credits: offer the 4-lesson package right here.
+    noCredits: !rsLesson && !bkResult && credits === 0,
+    packageLine: `Or buy a ${PACKAGE_LESSONS}-lesson package: ${formatMoney(PACKAGE_PRICE_CENTS.zelle)} by Zelle or ${formatMoney(PACKAGE_PRICE_CENTS.cash)} in cash up front. Credits are added once your teacher marks it paid.`,
+    buyPackage: () => { if (readOnly) return flash(PREVIEW_OFF); setPkgStep(1); setPkgResult(null); open("packages"); },
     recurringHint: `Books this time every week. ${EACH_LESSON}`,
     confirmLabel: booking ? "Saving…" : rsLesson ? "Confirm new time" : repeatWeekly ? `Book ${bkWeeks} lessons` : "Confirm lesson",
     summary: slotError || (bkSlot && student ? `${student.firstName} · ${dayLabel} · ${clock(bkSlot)} · ${bkLoc}${repeatWeekly && !rsLesson ? ` · weekly × ${bkWeeks}` : ""}` : "Choose a date and time"),
@@ -489,7 +500,12 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
   };
 
   const acctMe = me?.account;
-  const familyRows = [
+  // A self-managed adult (role student, one student) is one person: show one entry, not the account plus the student.
+  const selfManaged = me?.user.role === "student" && (data?.students ?? []).length <= 1;
+  const ownStudent = selfManaged ? data?.students[0] : undefined;
+  const familyRows = selfManaged ? [
+    { initials: ownStudent ? initialsOf(ownStudent.fullName) : acctMe?.initials ?? "", name: ownStudent?.fullName ?? acctMe?.ownerFull ?? "", meta: `${acctMe?.email ?? ""} · account owner${ownStudent?.styleLine ? ` · ${ownStudent.styleLine}` : ""}`, role: "Student" },
+  ] : [
     { initials: acctMe?.initials ?? "", name: acctMe?.ownerFull ?? "", meta: `${acctMe?.email ?? ""} · account owner`, role: me?.user.role === "guardian" ? "Parent" : "Student" },
     ...(data?.students ?? []).filter((s) => s.fullName !== acctMe?.ownerFull).map((s) => ({ initials: s.firstName[0] ?? "", name: s.fullName, meta: s.styleLine, role: "Student" })),
   ];
@@ -502,8 +518,10 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     menuLabel: acctMe?.isFamily ? "Profile & family" : "Profile",
     familyNote: acctMe?.isFamily ? "To add a family member or change contact details," : "To change your contact details or add a family member,",
   };
-  const empty = !loading && !!data && (!student || (!data.notes.length && !data.videos.length && !data.history.length));
-  const sub = { loading, notLoading: !loading, empty, normal: !loading && !empty && !!data, default: !loading };
+  // The dashboard (lessons, balance, packages, referrals) shows as soon as there is a student. The onboarding
+  // screen is only for an account that isn't linked to a student yet.
+  const empty = !loading && !!data && !student;
+  const sub = { loading, notLoading: !loading, empty, normal: !loading && !!data && !!student, default: !loading };
   const firstName = student?.firstName ?? "your student";
 
   const ob = (() => {
@@ -541,6 +559,20 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       status: held ? "Awaiting payment" : "Booked",
       color: held ? "#9C5F22" : "#1D2A44",
       hold: holdLine(l),
+      held,
+      badgeColor: held ? "#9C5F22" : "#4A6149",
+      badgeBg: held ? "rgba(194,125,56,.08)" : "rgba(74,97,73,.1)",
+      badgeIcon: held ? "ph-fill ph-hourglass" : "ph-fill ph-check-circle",
+      badge: held ? `Waiting for payment${l.holdExpiresAt ? `, hold until ${fmt(l.holdExpiresAt, { weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : ""}` : "Confirmed",
+      icon: l.isZoom ? "ph ph-video-camera" : "ph ph-map-pin",
+      locSub: l.locationSub,
+      fullDate: fullDate(l.startTime),
+      payLabel: held ? "Pay now" : "",
+      pay: () => {
+        const inv = l.invoiceId ? allInvoices.find((i) => i.id === l.invoiceId) : undefined;
+        if (inv && inv.amountDue > 0) openPay(inv);
+        else { setInvoiceId(l.invoiceId ?? null); open("invoice"); }
+      },
       canAct: !readOnly && !!data?.canBook,
       move: () => openReschedule(l),
       moveLocked: hoursUntil(l) < rescheduleHours,
@@ -568,6 +600,7 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     ...sec,
     tfa: { ...sec.tfa, banner: !sec.tfa.on && !readOnly && !loading },
     ob, rs, bk, dlg, dv, dn, inv: invView, sched, form, familyRows,
+    readOnly, canBookNow: !readOnly && !!data?.canBook,
     schedNote: `Moves are free until ${rescheduleHours} hours before a lesson. Cancelling within ${cancelHours} hours still uses the credit or keeps the charge.`,
     hasLessonCal: false, noLessonCal: true, lessonCalUrl: "",
     invoiceHistory: allInvoices.map((i) => ({ id: i.id, number: i.number, date: fmtDay(i.issueDate), amount: money(i.total), status: invoiceWord(i), on: i.id === selected?.id, pick: () => setInvoiceId(i.id) })),

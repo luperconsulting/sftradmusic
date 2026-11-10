@@ -99,7 +99,10 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     setBusy(true);
     setError("");
     try {
-      const session = await api<{ accessToken: string; refreshToken: string }>("/invitations/verify-code", { method: "POST", body: { email: address, code: otp } });
+      const referralCode = String(form.rc ?? "").trim();
+      const session = await api<{ accessToken: string; refreshToken: string; referral?: "applied" | "invalid" | null }>("/invitations/verify-code", { method: "POST", body: { email: address, code: otp, ...(referralCode ? { referralCode } : {}) } });
+      if (session.referral === "applied") flash("Referral code applied: $15 off your first invoice.");
+      if (session.referral === "invalid") flash("That referral code couldn't be applied. You can still continue.");
       if (supabase) {
         const { error: err } = await supabase.auth.setSession({ access_token: session.accessToken, refresh_token: session.refreshToken });
         if (err) throw new Error("We couldn't start your session. Please try the code again.");
@@ -110,7 +113,7 @@ export function useAuthVM(screen: "signin" | "signup" | "invite" | "twofa" | "de
     } finally {
       setBusy(false);
     }
-  }, [email, code, busy]);
+  }, [email, code, busy, form.rc, flash]);
 
   const finishInvitePassword = useCallback(async () => {
     if (password.length < 12) return setError("Your password needs at least 12 characters.");

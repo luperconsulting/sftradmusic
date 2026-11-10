@@ -21,6 +21,11 @@ export default function InviteView({ v }: { v: VM }) {
               <span style={label}>Invitation code</span>
               <input className="dc-f6" inputMode="numeric" autoComplete="one-time-code" maxLength={10} value={v.su.otp ?? ""} onChange={v.su.setOtp} placeholder="Code" style={{ ...field, fontFamily: "'Cinzel',Georgia,serif", letterSpacing: ".2em", fontSize: "22px", textAlign: "center" }} />
             </label>
+            <label style={{ display: "flex", flexDirection: "column", gap: "6px" }}>
+              <span style={label}>Referral code <span style={{ fontWeight: "400", textTransform: "none", letterSpacing: "0", color: "rgba(17,22,27,.45)" }}>(optional)</span></span>
+              <input className="dc-f6" value={v.rc?.value ?? ""} onChange={v.rc?.set} placeholder="SFTM-XXXXXXXX" autoComplete="off" style={field} />
+              <span style={{ fontSize: "12px", color: "rgba(17,22,27,.5)" }}>A friend's code takes $15 off your first invoice.</span>
+            </label>
             <button className="dc-h7" onClick={v.su.submitOtp} style={button}>Continue</button>
           </div>
           <p style={{ fontSize: "12px", color: "rgba(17,22,27,.5)", margin: "24px 0 0", textAlign: "center", lineHeight: "1.6" }}>The code expires in one hour and works only once.</p>

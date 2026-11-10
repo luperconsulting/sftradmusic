@@ -61,3 +61,22 @@ export function wallTimeToIso(date: string, time: string, tz = TZ) {
   const first = guess - offset(guess);
   return new Date(guess - offset(first)).toISOString();
 }
+
+/** Today's date (YYYY-MM-DD) in the studio's time zone. */
+export const studioToday = (now = new Date()) =>
+  new Intl.DateTimeFormat("en-CA", { timeZone: TZ, year: "numeric", month: "2-digit", day: "2-digit" }).format(now);
+
+/** The booking picker's month `offset` months from now, in studio time: the month start and the slot range to ask for. */
+export function bookingMonthRange(offset: number, now = new Date()) {
+  const today = studioToday(now);
+  const [ty, tm] = today.split("-").map(Number);
+  const base = new Date(Date.UTC(ty, tm - 1 + offset, 1));
+  const y = base.getUTCFullYear(), m = base.getUTCMonth();
+  const p = (n: number) => String(n).padStart(2, "0");
+  const first = `${y}-${p(m + 1)}-01`;
+  const last = `${y}-${p(m + 1)}-${p(new Date(Date.UTC(y, m + 1, 0)).getUTCDate())}`;
+  return { base, from: first < today ? today : first, to: last };
+}
+
+/** Every open date in the month, padded to full rows of 8 (never cut off). */
+export const dateGrid = <T,>(days: T[]): (T | null)[] => Array.from({ length: Math.max(16, Math.ceil(days.length / 8) * 8) }, (_, i) => days[i] ?? null);
