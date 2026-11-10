@@ -100,8 +100,8 @@ describe("portal invitation email", () => {
     expect(createContact).not.toHaveBeenCalled();
   });
 
-  it("revokes the invitation when Supabase does not accept the email", async () => {
-    const { post, revokeInvitation, sendInvoice } = teacherApp({
+  it("creates no invitation when Supabase does not accept the email", async () => {
+    const { post, revokeInvitation, createInvitation, sendInvoice } = teacherApp({
       safeMode: true,
       send: async () => { throw new Error("smtp down"); },
     });
@@ -109,7 +109,8 @@ describe("portal invitation email", () => {
     expect(res.status).toBe(503);
     expect(res.body.error.code).toBe("invite_email_failed");
     expect(JSON.stringify(res.body)).not.toContain("smtp");
-    expect(revokeInvitation).toHaveBeenCalledWith("inv-arzo");
+    expect(createInvitation).not.toHaveBeenCalled();
+    expect(revokeInvitation).not.toHaveBeenCalled();
     expect(sendInvoice).not.toHaveBeenCalled();
   });
 
@@ -137,7 +138,7 @@ describe("portal invitation email", () => {
     expect(res.body.inviteUrl).toBe(first.body.inviteUrl);
     const hashes = createInvitation.mock.calls.map((c: any) => c[0].tokenHash);
     expect(hashes[0]).not.toBe(hashes[1]);
-    expect(revokePendingForEmail).toHaveBeenCalledWith(ARZO);
+    expect(revokePendingForEmail).toHaveBeenCalledWith(ARZO, "inv-arzo");
     expect(sendPortalInvite).toHaveBeenCalledTimes(2);
     expect(createInvitation.mock.calls.every((c: any) => c[0].studentIds.length === 0)).toBe(true);
   });

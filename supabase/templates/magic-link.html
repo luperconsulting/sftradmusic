@@ -14,7 +14,7 @@
               <td style="padding:32px 28px;font-family:Georgia,'Times New Roman',serif;color:#11161B;">
                 <p style="margin:0 0 8px;font-size:16px;line-height:1.5;">Your one-time code for the student portal:</p>
                 <p style="margin:0 0 24px;font-family:Georgia,'Times New Roman',serif;font-size:36px;line-height:1.2;letter-spacing:0.28em;font-weight:bold;color:#1D2A44;text-align:center;">{{ .Token }}</p>
-                <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Open <a href="{{ .SiteURL }}/invite" style="color:#9C5F22;text-decoration:underline;">{{ .SiteURL }}/invite</a>, enter this email address, and type the code. Then choose a password and turn on two-factor authentication.</p>
+                <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">Open <a href="{{ .RedirectTo }}" style="color:#9C5F22;text-decoration:underline;">{{ .RedirectTo }}</a>, enter this email address, and type the code. Then choose a password and turn on two-factor authentication.</p>
                 <p style="margin:0 0 16px;font-size:15px;line-height:1.6;">The code expires in one hour and works only once. If you need another, ask Zane to resend it.</p>
                 <p style="margin:0;font-size:13px;line-height:1.5;color:#5c6570;">If you weren't expecting this, you can ignore this email.</p>
               </td>
