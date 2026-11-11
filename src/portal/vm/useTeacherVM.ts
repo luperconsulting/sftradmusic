@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { daysOverdue } from "../../../shared/dates";
 import { useLocation, useNavigate, useParams } from "react-router-dom";
 import { studentFormError } from "../../../shared/student-form";
 import type { AssignedVideoDTO, BillingDTO, InvitationDTO, InvoiceDTO, LessonDTO, NoteDTO, PracticeAssignmentDTO, ReferralPanelDTO, StudentSummary, TeacherPaymentReportDTO, TeacherStudentRow, VideoDTO } from "../../../shared/portal-types";
@@ -24,7 +25,8 @@ const startOfWeek = (offset: number) => {
   const d = new Date(now.getFullYear(), now.getMonth(), now.getDate() - now.getDay() + offset * 7);
   return d;
 };
-const invoiceOverdue = (i: InvoiceDTO) => i.amountDue > 0 && !["paid", "void", "draft"].includes(i.status) && !!i.dueDate && new Date(i.dueDate).getTime() < Date.now();
+// Overdue only once the due date has passed in Los Angeles (not at 4 PM PT on the due date, when UTC rolls over).
+const invoiceOverdue = (i: InvoiceDTO) => i.amountDue > 0 && !["paid", "void", "draft"].includes(i.status) && !!i.dueDate && daysOverdue(i.dueDate) > 0;
 const invoiceDisplay = (i: InvoiceDTO) => (invoiceOverdue(i) ? "Overdue" : statusLabel[i.status] ?? i.status);
 const WEEKDAYS = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
 const pad2 = (n: number) => String(n).padStart(2, "0");

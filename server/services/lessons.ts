@@ -163,7 +163,7 @@ export async function bookLessons(ctx: PortalContext, input: {
     // No credit: a $100 invoice. A family's booking is held until it's paid; a teacher's booking is confirmed.
     const hold = input.source === "portal" ? new Date(Math.min(ctx.now() + settings.holdWindowMinutes * 60000, start)).toISOString() : null;
     const lesson = await store.createLesson({ ...base, status: hold ? "pending_payment" : "scheduled", holdExpiresAt: hold });
-    const invoice = await sessionInvoice(ctx, input.student, lesson.id, `60-min lesson · ${bookingDate(start)}`, input.actorAccountId);
+    const invoice = await sessionInvoice(ctx, input.student, lesson.id, `60-min lesson · ${bookingDate(start)}`, input.actorAccountId, hold);
     invoices.push(invoice.id);
     // A $0 invoice (covered by referral credit) was settled at once, which already confirmed nothing yet linked.
     const linked = await store.updateLesson(lesson.id, { invoiceId: invoice.id, ...(invoice.status === "paid" && hold ? { status: "scheduled", holdExpiresAt: null } : {}) });

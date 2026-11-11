@@ -5,6 +5,7 @@ import { z } from "zod";
 import type { BillingDTO, InvoiceDTO, PaymentDTO, PaymentReportDTO } from "../../shared/portal-types.js";
 import { PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRER_CREDIT_CENTS, SESSION_PRICE_CENTS, type PackageMethod } from "../../shared/pricing.js";
 import { ApiError, notFound } from "../http.js";
+import { studioDate } from "../../shared/dates.js";
 import type { InvoiceKind, InvoiceRecord, InvoiceRecordStatus, PaymentMethod, PaymentMethodChoice, PaymentRecord, PortalStore, StudentRecord } from "../store/types.js";
 import { teacherFor, type PortalContext } from "./context.js";
 import { notify } from "./notify.js";
@@ -110,7 +111,8 @@ export async function invoicesWithReports(store: Pick<PortalStore, "listPaymentR
   return invoices.map((i) => toInvoiceDTO(i, (() => { const r = reports.find((x) => x.invoiceId === i.id); return r ? reportDTO(r) : null; })()));
 }
 
-const todayIso = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+// Invoice dates are Los Angeles calendar dates (a 4 PM PT invoice must not be dated tomorrow in UTC).
+const todayIso = (ms: number) => studioDate(ms);
 
 /**
  * Creates an invoice with the referral adjustments that apply to this student:
@@ -301,10 +303,15 @@ export async function buyPackage(ctx: PortalContext, student: StudentRecord, met
   return { invoice, existing: false };
 }
 
-/** The $100 invoice for one held session. */
-export function sessionInvoice(ctx: PortalContext, student: StudentRecord, lessonId: string, label: string, actorAccountId: string | null) {
+/**
+ * The $100 invoice for one session. A held session is due on the day its hold ends (in Los Angeles), never
+ * before: the hold is how long the family has to pay.
+ */
+export function sessionInvoice(ctx: PortalContext, student: StudentRecord, lessonId: string, label: string, actorAccountId: string | null, holdExpiresAt: string | null = null) {
+  const issueDate = todayIso(ctx.now());
+  const holdDay = holdExpiresAt ? studioDate(Date.parse(holdExpiresAt)) : issueDate;
   return issueInvoice(ctx, {
-    student, kind: "session", title: "Single session", method: "zelle", actorAccountId,
+    student, kind: "session", title: "Single session", method: "zelle", actorAccountId, issueDate, dueDate: holdDay > issueDate ? holdDay : issueDate,
     lines: [{ label, amountCents: SESSION_PRICE_CENTS, lessonId }],
   });
 }

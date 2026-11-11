@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
+import { daysOverdue, dueLabel } from "../../../shared/dates";
 import { formatMoney, PACKAGE_LESSONS, PACKAGE_PRICE_CENTS, REFERRAL_DISCOUNT_CENTS, REFERRER_CREDIT_CENTS, SERIES_WEEKS_DEFAULT, SERIES_WEEKS_MAX, SESSION_PRICE_CENTS, type PackageMethod } from "../../../shared/pricing";
 import { invoiceMemo, OUTSTANDING_BALANCE_MESSAGE, type DashboardResponse, type InvoiceDTO, type LessonDTO, type PaymentReportDTO, type SlotsResponse, type ZelleDetailsDTO } from "../../../shared/portal-types";
 import { api, ApiRequestError, errorText } from "../api/client";
@@ -481,7 +482,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
       }
     : { issued: "—", due: "—", status: "No invoices yet", color: "rgba(17,22,27,.5)", total: "$0.00", amountDue: "$0.00", number: "", method: "", open: false, lines: [] };
 
-  const overdueDays = firstOpen?.dueDate ? Math.floor((Date.now() - new Date(firstOpen.dueDate).getTime()) / 864e5) : 0;
+  // Counted in Los Angeles: an invoice due today reads "Due today", not "Overdue · 1 day" after 4 PM PT.
+  const overdueDays = firstOpen?.dueDate ? daysOverdue(firstOpen.dueDate) : 0;
   const owed = !!billing && !loading && (billing.outstanding > 0 || billing.openInvoices.length > 0 || billing.bookingBlocked);
   const bal = {
     unavailable: !billing && !loading,
@@ -492,7 +494,8 @@ export function useStudentVM(screen: { readOnlyStudentId?: string | null } = {})
     items: firstOpen?.lines.map((l) => l.label).join(", ") || firstOpen?.title || "",
     due: fmtDay(firstOpen?.dueDate, { month: "long", day: "numeric", year: "numeric" }),
     statusLabel: firstOpen ? invoiceWord(firstOpen) : "",
-    statusLine: pendingReport(firstOpen) ? "Payment reported" : overdueDays > 0 ? `Overdue · ${overdueDays} day${overdueDays === 1 ? "" : "s"}` : "Awaiting payment",
+    statusLine: pendingReport(firstOpen) ? "Payment reported" : firstOpen?.dueDate ? dueLabel(firstOpen.dueDate) : "Awaiting payment",
+    overdue: !pendingReport(firstOpen) && overdueDays > 0,
     hasLast: !!lastPaid,
     lastAmount: lastPaid ? money(lastPaid.amountPaid || lastPaid.total) : "",
     lastDate: fmtDay(lastPaid?.issueDate),
