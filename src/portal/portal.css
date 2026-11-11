@@ -1,0 +1,17 @@
+@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@400;500;600;700&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,300;1,400&display=swap');
+@import "./views/design-states.css";
+
+/* Base styles from the approved design */
+*, *::before, *::after { box-sizing: border-box; }
+body { margin: 0; background: #F9F8F5; color: #11161B; font-family: 'Plus Jakarta Sans', system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+a { color: #9C5F22; text-decoration: none; }
+a:hover { color: #7F4D1B; }
+input, select, textarea, button { font: inherit; }
+input::placeholder, textarea::placeholder { color: rgba(17, 22, 27, .4); }
+:focus-visible { outline: 2px solid #C27D38; outline-offset: 3px; }
+::selection { background: #C27D38; color: #fff; }
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .5; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}

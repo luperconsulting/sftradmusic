@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import "./booking-widget.css";
 
-// The approved booking widget, fed by /api/booking/availability: GoHighLevel's intro-call rules minus Google
+// The approved booking widget, fed by /api/booking/availability: the studio's weekly lesson hours (Supabase) minus Google
 // Calendar busy times. This phase only shows open times. Nothing is booked, saved or sent.
 const HOST_TZ = "America/Los_Angeles";
 const TIMEZONES: [string, string][] = [

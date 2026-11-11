@@ -1,6 +1,7 @@
+// LEGACY. Read-only GoHighLevel free slots from the old booking page. Kept for migration only; nothing imports it.
 // GoHighLevel API v2, read-only: open slots for a calendar. Path and fields follow GoHighLevel's published
 // OpenAPI file (github.com/GoHighLevel/highlevel-api-docs: apps/calendars.json).
-import { ApiError } from "../http.js";
+import { ApiError } from "../../http.js";
 
 const BASE = "https://services.leadconnectorhq.com";
 const CALENDAR_VERSION = "2021-04-15";

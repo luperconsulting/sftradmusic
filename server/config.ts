@@ -1,27 +1,79 @@
-// Server-only settings for the public booking widget. Nothing here is sent to the browser.
-import type { GhlConfig } from "./integrations/ghl.js";
+// Reads server configuration. GoHighLevel is not read here: the portal runs on Supabase alone.
+// Anything missing leaves that integration "not configured", and the routes
+// depending on it fail with 503. Nothing falls back to simulated data.
+import { stripeKeysFromEnv, type StripeKeys } from "./integrations/stripeCheckout.js";
 import type { GoogleCalendarConfig } from "./integrations/googleCalendar.js";
+import { smtpFromEnv, type SmtpAuth } from "./mail/mailer.js";
+import { supabaseKeyKind } from "../shared/supabase-keys.js";
 
 export interface ServerConfig {
-  /** GoHighLevel, read-only: the booking calendar's open hours and rules. Null until the token and location are set. */
-  ghl: GhlConfig | null;
+  appUrl: string;
+  supabase: { url: string; serviceRoleKey: string } | null;
+  /** Preview safe mode: portal email goes only to safeModeEmailAllowlist. It does not suppress Supabase auth mail. */
+  safeMode: boolean;
+  /** Used only while safe mode is on. Portal email is limited to these addresses. */
+  safeModeEmailAllowlist: string[];
+  videoBucket: string;
+  /** Present only when both SMTP_USER and SMTP_PASS are set. The values are never sent to the browser. */
+  smtp: SmtpAuth | null;
+  /** Present only for sk_test_ and pk_test_ keys. Live keys are ignored, so nothing real can be charged. */
+  stripe: StripeKeys | null;
+  /** Verifies /api/webhooks/stripe. Without it the webhook refuses every event. */
+  stripeWebhookSecret: string | null;
   /** Google Calendar free/busy via Workload Identity Federation. Null until every setting is present. */
   google: GoogleCalendarConfig | null;
-  /** Which GoHighLevel calendar's rules give the base times, and the slot length. */
-  booking: { ghlCalendarId: string; slotMinutes: number };
+  /** Bearer token for GET /api/ops/summary. Null turns the endpoint off. */
+  opsApiToken: string | null;
+  /** Public booking widget slot length in minutes (intro calls). */
+  bookingSlotMinutes: number;
+  features: {
+    /** CARD_PAYMENTS_ENABLED=true and Stripe test keys present. Off by default. */
+    cardPayments: boolean;
+  };
+}
+
+/**
+ * Safe mode is on unless this process is a production deployment, or SAFE_MODE says otherwise.
+ * Vercel Preview runs with NODE_ENV=production, so the Vercel environment is what decides, not NODE_ENV alone.
+ */
+export function previewSafeMode(env: Record<string, string | undefined>): boolean {
+  const raw = env.SAFE_MODE?.trim().toLowerCase();
+  if (raw === "1" || raw === "true" || raw === "yes" || raw === "on") return true;
+  if (raw === "0" || raw === "false" || raw === "no" || raw === "off") return false;
+  if (env.VERCEL_ENV) return env.VERCEL_ENV !== "production";
+  return env.NODE_ENV !== "production";
+}
+
+/** The one address a Preview teacher can invite when SAFE_MODE_EMAIL_ALLOWLIST is unset. */
+export const DEFAULT_SAFE_INVITE_ALLOWLIST = ["luperdev@gmail.com"];
+
+/** Comma, semicolon, or whitespace separated. An empty value keeps the default test address. */
+export function safeInviteAllowlist(env: Record<string, string | undefined>): string[] {
+  const raw = env.SAFE_MODE_EMAIL_ALLOWLIST;
+  if (raw === undefined || raw.trim() === "") return [...DEFAULT_SAFE_INVITE_ALLOWLIST];
+  return [...new Set(raw.split(/[,;\s]+/).map((s) => s.trim().toLowerCase()).filter(Boolean))];
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
-  const token = env.GHL_PRIVATE_INTEGRATION_TOKEN?.trim();
-  const locationId = env.GHL_LOCATION_ID?.trim();
+  const supabaseUrl = env.SUPABASE_URL;
+  const serviceRoleKey = env.SUPABASE_SERVICE_ROLE_KEY;
+  // A public key here would make every store call fail on RLS, so treat it as not configured.
+  const usableServerKey = !!serviceRoleKey && supabaseKeyKind(serviceRoleKey) !== "public";
+  const safeMode = previewSafeMode(env);
+  const stripe = stripeKeysFromEnv(env);
   return {
-    ghl: token && locationId ? { token, locationId, timezone: env.GHL_TIMEZONE || "America/Los_Angeles" } : null,
+    appUrl: env.APP_URL || "http://localhost:3000",
+    supabase: supabaseUrl && usableServerKey ? { url: supabaseUrl, serviceRoleKey: serviceRoleKey! } : null,
+    safeMode,
+    safeModeEmailAllowlist: safeInviteAllowlist(env),
+    videoBucket: env.SUPABASE_VIDEO_BUCKET || "lesson-videos",
+    smtp: smtpFromEnv(env),
+    stripe,
+    stripeWebhookSecret: env.STRIPE_WEBHOOK_SECRET?.trim().startsWith("whsec_") ? env.STRIPE_WEBHOOK_SECRET.trim() : null,
     google: googleFromEnv(env),
-    booking: {
-      // The intro-call calendar the booking page has always used. Its open hours and rules stay in GoHighLevel.
-      ghlCalendarId: env.BOOKING_GHL_CALENDAR_ID || "vc5JhcEjhKFs3MpJyj9p",
-      slotMinutes: Number(env.BOOKING_SLOT_MINUTES) > 0 ? Number(env.BOOKING_SLOT_MINUTES) : 15,
-    },
+    opsApiToken: (env.OPS_API_TOKEN?.trim().length ?? 0) >= 24 ? env.OPS_API_TOKEN!.trim() : null,
+    bookingSlotMinutes: Number(env.BOOKING_SLOT_MINUTES) > 0 ? Number(env.BOOKING_SLOT_MINUTES) : 15,
+    features: { cardPayments: env.CARD_PAYMENTS_ENABLED?.trim().toLowerCase() === "true" && !!stripe },
   };
 }
 

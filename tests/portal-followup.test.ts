@@ -1,0 +1,84 @@
+import { describe, expect, it, vi } from "vitest";
+import request from "supertest";
+import nodemailer from "nodemailer";
+import type { Application } from "express";
+import { createApp } from "../server/app";
+import { invoicePayUrl } from "../server/legacy/ghl/client";
+import { STUDENT_A, buildDeps } from "./helpers";
+
+const parent = { role: "guardian" as const, links: [{ studentId: STUDENT_A, canBook: true, canPay: true }] };
+
+function routesOf(app: Application) {
+  const found: { method: string; path: string }[] = [];
+  const stack = (app as any)._router?.stack ?? [];
+  const mount = (layer: any) => {
+    const source = String(layer?.regexp?.source ?? "");
+    if (source.startsWith("^\\/api\\/teacher")) return "/api/teacher";
+    if (source.startsWith("^\\/api")) return "/api";
+    return "";
+  };
+  for (const layer of stack) {
+    if (layer.route) {
+      for (const method of Object.keys(layer.route.methods)) found.push({ method: method.toUpperCase(), path: layer.route.path });
+    } else if (layer.name === "router") {
+      const prefix = mount(layer);
+      for (const inner of layer.handle?.stack ?? []) {
+        if (!inner.route) continue;
+        for (const method of Object.keys(inner.route.methods)) found.push({ method: method.toUpperCase(), path: prefix + inner.route.path });
+      }
+    }
+  }
+  return found;
+}
+
+const PUBLIC = new Set([
+  "GET /api/health",
+  "POST /api/invitations/verify",
+  "POST /api/invitations/redeem",
+  "POST /api/invitations/verify-code",
+  // Public widget times, the bearer-token ops summary, and the signed Stripe webhook (off unless card payments are on).
+  "GET /api/booking/availability",
+  "GET /api/ops/summary",
+  "POST /api/webhooks/stripe",
+]);
+
+describe("legacy invoice pay links (migration only)", () => {
+  it("uses a GoHighLevel https link and drops it in safe mode", () => {
+    expect(invoicePayUrl({ paymentLink: "https://pay.gohighlevel.com/invoice/abc" }, false)).toBe("https://pay.gohighlevel.com/invoice/abc");
+    expect(invoicePayUrl({ paymentLink: "https://pay.gohighlevel.com/invoice/abc" }, true)).toBeNull();
+    expect(invoicePayUrl({ url: "/portal" }, false)).toBeNull();
+    expect(invoicePayUrl({}, false)).toBeNull();
+  });
+});
+
+describe("password and 2FA coverage", () => {
+  it("rejects every portal route at AAL1 and leaves only invite enrollment public", async () => {
+    const app = createApp(buildDeps({ p: { role: "guardian", aal: "aal1", mfa: false, links: parent.links }, t: { role: "teacher", aal: "aal1", mfa: true } }));
+    const routes = routesOf(app).filter((route) => route.path.startsWith("/api"));
+    const open: string[] = [];
+    const closed: string[] = [];
+    for (const route of routes) {
+      const key = `${route.method} ${route.path}`;
+      if (key === "GET /api/me") {
+        // Open to AAL1 for routing only; it returns no account data until 2FA passes.
+        const me = await request(app).get(route.path).set("Authorization", "Bearer p");
+        expect(Object.keys(me.body).sort(), key).toEqual(["mfaRequired", "user"]);
+        continue;
+      }
+      if (PUBLIC.has(key)) {
+        open.push(key);
+        continue;
+      }
+      const path = route.path.replace(/:([^/]+)/g, "x");
+      const token = path.includes("/teacher/") ? "t" : "p";
+      const call = request(app)[route.method.toLowerCase() as "get" | "post" | "put"](path).set("Authorization", `Bearer ${token}`);
+      const res = route.method === "GET" ? await call : await call.send({});
+      expect(res.status, key).toBe(403);
+      expect(res.body.error.code, key).toBe("mfa_required");
+      closed.push(key);
+    }
+    expect(new Set(open)).toEqual(PUBLIC);
+    expect(closed.length).toBeGreaterThan(10);
+    expect(closed.some((route) => route.includes("/teacher/"))).toBe(true);
+  });
+});

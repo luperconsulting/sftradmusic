@@ -1,4 +1,11 @@
 User-agent: *
 Allow: /
+Disallow: /signin
+Disallow: /signup
+Disallow: /invite
+Disallow: /verify
+Disallow: /portal
+Disallow: /teacher
+Disallow: /api/
 
 Sitemap: https://www.sftradmusic.com/sitemap.xml

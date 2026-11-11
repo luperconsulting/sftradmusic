@@ -1,0 +1,22 @@
+/* Hover/focus/active states carried over from the approved design. */
+.dc-h0:hover{color:#9C5F22 !important}
+.dc-h1:hover{border-color:#C27D38 !important;color:#9C5F22 !important}
+.dc-h2:hover{border-color:#C27D38 !important}
+.dc-h3:hover{background:#9C5F22 !important}
+.dc-h4:hover{text-decoration:underline !important}
+.dc-h5:hover{background:rgba(255,255,255,.2) !important}
+.dc-f6:focus{border-color:#C27D38 !important}
+.dc-h7:hover{background:#7F4D1B !important}
+.dc-a8:active{background:#7F4D1B !important}
+.dc-h9:hover{opacity:.8 !important}
+.dc-h10:hover{border-color:rgba(194,125,56,.5) !important;box-shadow:0 6px 18px rgba(17,22,27,.08) !important}
+.dc-h11:hover{background:rgba(17,22,27,.02) !important}
+.dc-h12:hover{border-color:#C27D38 !important;color:#E0A363 !important}
+.dc-h13:hover{background:rgba(17,22,27,.04) !important}
+.dc-h14:hover{background:rgba(156,95,34,.06) !important}
+.dc-h15:hover{box-shadow:0 4px 12px rgba(17,22,27,.12) !important}
+.dc-h16:hover{color:#9C5F22 !important;text-decoration:underline !important}
+.dc-h17:hover{background:rgba(194,125,56,.04) !important}
+.dc-h18:hover{border-color:rgba(194,125,56,.5) !important}
+.dc-h19:hover{background:rgba(255,255,255,.06) !important;color:#fff !important}
+.dc-h20:hover{color:#E0A363 !important}

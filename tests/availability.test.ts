@@ -1,124 +1,114 @@
+// Open times = the teacher's weekly lesson hours (Supabase) minus Google Calendar busy times minus booked or held
+// lessons. Used by the public booking widget (GET /api/booking/availability) and the portal (GET /api/lessons/slots).
 import request from "supertest";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createApp, type Deps } from "../server/app";
-import { googleFromEnv, loadConfig } from "../server/config";
-import { createGhlClient } from "../server/integrations/ghl";
-import { memoryRateLimiter } from "../server/rateLimit";
+import { createApp } from "../server/app";
+import { googleFromEnv } from "../server/config";
 import { createGoogleCalendar, failureReason, FREEBUSY_SCOPE, workloadIdentityOptions, workloadIdentityTokenSource } from "../server/integrations/googleCalendar";
-import { bookingDate, openTimes, startOfBookingDate } from "../server/services/availability";
+import { bookingDate, openSlots, startOfBookingDate, zonedMinute } from "../server/services/availability";
+import { buildDeps, fakeGoogle, fixtureTables } from "./helpers";
+import { lessonRow, TEACHER_ACCOUNT } from "./memoryStore";
 
-const NOW = Date.parse("2026-11-10T17:00:00Z"); // 9:00 AM in Los Angeles
+const NOW = Date.parse("2026-11-10T17:00:00Z"); // Tuesday 9:00 AM in Los Angeles
 const iso = (s: string) => new Date(s).toISOString();
-const base = (...slots: string[]) => ({ "2026-11-10": slots.map(iso) });
+const TUESDAY = [{ weekday: 2, startMinute: 10 * 60, endMinute: 13 * 60 }]; // 10:00-13:00
 
 describe("open times", () => {
-  it("shows a normal open time", () => {
-    const days = openTimes({ base: base("2026-11-10T19:00:00-08:00"), busy: [], durationMinutes: 15, now: NOW });
-    expect(days).toEqual({ "2026-11-10": [iso("2026-11-10T19:00:00-08:00")] });
+  it("offers 60-minute starts every half hour inside the weekly hours", () => {
+    const days = openSlots({ hours: TUESDAY, fromDate: "2026-11-10", toDate: "2026-11-10", busy: [], lessons: [], durationMinutes: 60, stepMinutes: 30, now: NOW });
+    expect(days["2026-11-10"]).toEqual(["10:00", "10:30", "11:00", "11:30", "12:00"].map((t) => iso(`2026-11-10T${t}:00-08:00`)));
   });
 
-  it("drops a time that a Google Calendar event covers", () => {
-    const busy = [{ start: Date.parse("2026-11-10T10:00:00-08:00"), end: Date.parse("2026-11-10T11:00:00-08:00") }];
-    const days = openTimes({ base: base("2026-11-10T10:30:00-08:00", "2026-11-10T12:00:00-08:00"), busy, durationMinutes: 15, now: NOW });
-    expect(days["2026-11-10"]).toEqual([iso("2026-11-10T12:00:00-08:00")]);
+  it("drops a time that a Google Calendar event covers, including partial overlaps", () => {
+    const busy = [{ start: Date.parse("2026-11-10T10:45:00-08:00"), end: Date.parse("2026-11-10T11:15:00-08:00") }];
+    const days = openSlots({ hours: TUESDAY, fromDate: "2026-11-10", toDate: "2026-11-10", busy, lessons: [], durationMinutes: 60, stepMinutes: 30, now: NOW });
+    expect(days["2026-11-10"]).toEqual(["11:30", "12:00"].map((t) => iso(`2026-11-10T${t}:00-08:00`)));
+  });
+
+  it("drops times taken by confirmed or held lessons, but not cancelled or released ones", () => {
+    const lessons = [
+      lessonRow("s", iso("2026-11-10T10:00:00-08:00")),
+      lessonRow("s", iso("2026-11-10T12:00:00-08:00"), { status: "pending_payment", holdExpiresAt: iso("2026-11-11T00:00:00Z") }),
+      lessonRow("s", iso("2026-11-10T11:00:00-08:00"), { status: "cancelled", cancelledAt: iso("2026-11-09T00:00:00Z") }),
+    ];
+    const days = openSlots({ hours: TUESDAY, fromDate: "2026-11-10", toDate: "2026-11-10", busy: [], lessons, durationMinutes: 60, stepMinutes: 30, now: NOW });
+    expect(days["2026-11-10"]).toEqual([iso("2026-11-10T11:00:00-08:00")]);
   });
 
   it("never shows a time that has started or passed", () => {
-    const days = openTimes({ base: base("2026-11-10T08:00:00-08:00", "2026-11-10T09:00:00-08:00", "2026-11-10T09:15:00-08:00"), busy: [], durationMinutes: 15, now: NOW });
-    expect(days["2026-11-10"]).toEqual([iso("2026-11-10T09:15:00-08:00")]);
+    const later = Date.parse("2026-11-10T10:15:00-08:00");
+    const days = openSlots({ hours: TUESDAY, fromDate: "2026-11-10", toDate: "2026-11-10", busy: [], lessons: [], durationMinutes: 60, stepMinutes: 30, now: later });
+    expect(days["2026-11-10"][0]).toBe(iso("2026-11-10T10:30:00-08:00"));
   });
 
-  it("blocks partial overlaps at either end, but not an event that ends as the slot starts", () => {
-    const at = (t: string) => Date.parse(`2026-11-10T${t}:00-08:00`);
-    const busy = [
-      { start: at("13:50"), end: at("14:05") }, // runs into the 2:00 slot
-      { start: at("15:10"), end: at("16:00") }, // starts inside the 3:00 slot
-      { start: at("16:30"), end: at("17:00") }, // ends exactly when the 5:00 slot starts
-    ];
-    const days = openTimes({ base: base("2026-11-10T14:00:00-08:00", "2026-11-10T15:00:00-08:00", "2026-11-10T17:00:00-08:00"), busy, durationMinutes: 15, now: NOW });
-    expect(days["2026-11-10"]).toEqual([iso("2026-11-10T17:00:00-08:00")]);
-  });
-
-  it("files times under their Los Angeles date, whatever the source's keys", () => {
-    // 11:30 PM on Nov 10 in Los Angeles is already Nov 11 in UTC.
-    const days = openTimes({ base: { "2026-11-11": [iso("2026-11-10T23:30:00-08:00")] }, busy: [], durationMinutes: 15, now: NOW });
+  it("only uses the weekdays that have hours", () => {
+    const days = openSlots({ hours: TUESDAY, fromDate: "2026-11-10", toDate: "2026-11-16", busy: [], lessons: [], durationMinutes: 60, stepMinutes: 30, now: NOW });
     expect(Object.keys(days)).toEqual(["2026-11-10"]);
   });
 
-  it("works out Los Angeles midnight across daylight-saving changes", () => {
+  it("works out Los Angeles wall times across daylight-saving changes", () => {
     expect(new Date(startOfBookingDate("2026-11-10")).toISOString()).toBe("2026-11-10T08:00:00.000Z");
     expect(new Date(startOfBookingDate("2026-07-01")).toISOString()).toBe("2026-07-01T07:00:00.000Z");
-    expect(new Date(startOfBookingDate("2026-11-01")).toISOString()).toBe("2026-11-01T07:00:00.000Z");
-    expect(new Date(startOfBookingDate("2026-03-08")).toISOString()).toBe("2026-03-08T08:00:00.000Z");
+    expect(new Date(zonedMinute("2026-07-01", 600)).toISOString()).toBe("2026-07-01T17:00:00.000Z");
+    expect(new Date(zonedMinute("2026-11-01", 600)).toISOString()).toBe("2026-11-01T18:00:00.000Z");
     expect(bookingDate(Date.parse("2026-11-11T07:59:00Z"))).toBe("2026-11-10");
   });
 });
 
-describe("GET /api/booking/availability", () => {
-  const get = (deps: Deps, query = "from=2026-11-10&to=2026-11-12") => request(createApp(deps)).get(`/api/booking/availability?${query}`);
-  const future = new Date(Date.now() + 3 * 86400000);
-  const futureIso = (h: number) => { const d = new Date(future); d.setUTCHours(h, 0, 0, 0); return d.toISOString(); };
-
-  function deps(over: { busy?: () => Promise<any>; slots?: () => Promise<any>; google?: null } = {}) {
-    const getFreeSlots = vi.fn(over.slots ?? (async () => ({ x: [futureIso(18), futureIso(19)] })));
-    const busy = vi.fn(over.busy ?? (async () => [{ start: Date.parse(futureIso(19)), end: Date.parse(futureIso(20)) }]));
-    const d: Deps = { config: loadConfig({}), ghl: { getFreeSlots }, google: over.google === null ? null : { busy }, limiter: memoryRateLimiter() };
-    return { d, getFreeSlots, busy };
+describe("GET /api/booking/availability (public widget)", () => {
+  const future = new Date(Date.now() + 7 * 86400000);
+  const date = bookingDate(future.getTime());
+  const weekday = new Date(`${date}T12:00:00Z`).getUTCDay();
+  function setup(opts: { busy?: { start: number; end: number }[]; google?: null; hours?: boolean } = {}) {
+    const tables = fixtureTables();
+    if (opts.hours !== false) tables.hours[TEACHER_ACCOUNT] = [{ weekday, startMinute: 600, endMinute: 660 }];
+    const g = fakeGoogle(opts.busy ?? []);
+    const deps = buildDeps({}, {}, tables, { google: opts.google === null ? null : g.client });
+    return { app: createApp(deps), g };
   }
+  const get = (app: any, q = `from=${date}&to=${date}`) => request(app).get(`/api/booking/availability?${q}`);
 
-  it("is public and returns GoHighLevel's open times minus Google busy times, in Los Angeles time", async () => {
-    const { d, getFreeSlots } = deps();
-    const res = await get(d);
+  it("is public and returns lesson hours minus Google busy times, in Los Angeles time", async () => {
+    const { app } = setup();
+    const res = await get(app);
     expect(res.status).toBe(200);
-    expect(res.body.timezone).toBe("America/Los_Angeles");
-    expect(Object.values(res.body.days).flat()).toEqual([futureIso(18)]);
-    // The base rules come from the intro-call calendar, not the lesson calendar.
-    expect((getFreeSlots.mock.calls[0] as any[])[2]).toBe("vc5JhcEjhKFs3MpJyj9p");
+    expect(res.body).toMatchObject({ timezone: "America/Los_Angeles", slotMinutes: 15 });
+    expect(res.body.days[date]).toEqual([0, 15, 30, 45].map((m) => new Date(zonedMinute(date, 600 + m)).toISOString()));
   });
 
-  it("asks Google about one slot-length past the range, so the last slot is fully checked", async () => {
-    const { d, busy } = deps();
-    await get(d, "from=2026-11-10&to=2026-11-10");
-    const [from, to] = busy.mock.calls[0] as unknown as [number, number];
-    expect(new Date(from).toISOString()).toBe("2026-11-10T08:00:00.000Z");
-    expect(new Date(to).toISOString()).toBe("2026-11-11T08:15:00.000Z");
+  it("removes Google busy times", async () => {
+    const busyStart = zonedMinute(date, 600), busyEnd = zonedMinute(date, 630);
+    const { app } = setup({ busy: [{ start: busyStart, end: busyEnd }] });
+    expect((await get(app)).body.days[date]).toEqual([30, 45].map((m) => new Date(zonedMinute(date, 600 + m)).toISOString()));
   });
 
-  it("returns a safe error and no times when Google fails", async () => {
-    const { ApiError } = await import("../server/http");
-    const { d } = deps({ busy: async () => { throw new ApiError(503, "availability_unavailable", "Open times can't be checked right now. Please try again shortly."); } });
-    const res = await get(d);
-    expect(res.status).toBe(503);
-    expect(res.body.error.code).toBe("availability_unavailable");
-    expect(res.body.days).toBeUndefined();
-  });
-
-  it("returns the same safe error for an unexpected Google failure, a GoHighLevel failure, or no Google settings", async () => {
-    for (const over of [{ busy: async () => { throw new Error("boom"); } }, { slots: async () => { throw new Error("down"); } }, { google: null as null }]) {
-      const res = await get(deps(over).d);
+  it("returns the safe error, never unchecked times, when Google isn't configured or fails", async () => {
+    for (const over of [{ google: null as null }]) {
+      const res = await get(setup(over).app);
       expect(res.status).toBe(503);
       expect(res.body.error.code).toBe("availability_unavailable");
       expect(res.body.days).toBeUndefined();
     }
+    const failing = buildDeps({}, {}, fixtureTables(), { google: { busy: async () => { throw new (await import("../server/http")).ApiError(503, "availability_unavailable", "x"); } } });
+    failing.store!.listLessonHours = async () => [{ weekday, startMinute: 600, endMinute: 660 }];
+    expect((await get(createApp(failing))).status).toBe(503);
   });
 
-  it("returns the safe error when no settings are configured at all", async () => {
-    const res = await get({ config: loadConfig({}), ghl: null, google: null, limiter: memoryRateLimiter() });
-    expect(res.status).toBe(503);
-    expect(res.body.error.code).toBe("availability_unavailable");
+  it("returns no times when the teacher hasn't set lesson hours", async () => {
+    expect((await get(setup({ hours: false }).app)).body.days).toEqual({});
   });
 
   it("slows down a client that asks too often", async () => {
-    const { d } = deps();
-    const app = createApp(d);
-    for (let i = 0; i < 60; i++) await request(app).get("/api/booking/availability?from=2026-11-10&to=2026-11-10");
-    expect((await request(app).get("/api/booking/availability?from=2026-11-10&to=2026-11-10")).status).toBe(429);
+    const { app } = setup();
+    for (let i = 0; i < 60; i++) await get(app);
+    expect((await get(app)).status).toBe(429);
   });
 
   it("refuses an invalid or overlong range", async () => {
-    expect((await get(deps().d, "from=2026-11-12&to=2026-11-10")).status).toBe(400);
-    expect((await get(deps().d, "from=2026-11-01&to=2026-12-31")).status).toBe(400);
-    expect((await get(deps().d, "from=nope&to=2026-11-10")).status).toBe(400);
+    const { app } = setup();
+    expect((await get(app, "from=2026-11-12&to=2026-11-10")).status).toBe(400);
+    expect((await get(app, "from=2026-11-01&to=2026-12-31")).status).toBe(400);
+    expect((await get(app, "from=nope&to=2026-11-10")).status).toBe(400);
   });
 });
 
@@ -216,27 +206,3 @@ describe("Google Calendar client", () => {
   });
 });
 
-describe("GoHighLevel open slots", () => {
-  it("reads the intro calendar's free slots with the token, and keeps only date keys", async () => {
-    const f = vi.fn(async (_url: any, _init: any) => new Response(JSON.stringify({ "2026-11-10": { slots: ["2026-11-10T10:00:00-08:00"] }, traceId: "x" }), { status: 200 }));
-    const days = await createGhlClient({ token: "test-token", locationId: "loc", timezone: "America/Los_Angeles" }, f as any).getFreeSlots(1, 2, "vc5JhcEjhKFs3MpJyj9p");
-    expect(days).toEqual({ "2026-11-10": ["2026-11-10T10:00:00-08:00"] });
-    const [url, init] = f.mock.calls[0] as any;
-    expect(url).toContain("/calendars/vc5JhcEjhKFs3MpJyj9p/free-slots?startDate=1&endDate=2");
-    expect(init.headers.Authorization).toBe("Bearer test-token");
-  });
-
-  it("turns an HTTP error or network failure into an error, never an empty answer", async () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
-    const cfg = { token: "t", locationId: "l", timezone: "America/Los_Angeles" };
-    await expect(createGhlClient(cfg, (async () => new Response("", { status: 401 })) as any).getFreeSlots(1, 2, "c")).rejects.toMatchObject({ status: 503 });
-    await expect(createGhlClient(cfg, (async () => { throw new TypeError("offline"); }) as any).getFreeSlots(1, 2, "c")).rejects.toMatchObject({ status: 503 });
-  });
-
-  it("reads GoHighLevel and booking settings from the environment", () => {
-    expect(loadConfig({}).ghl).toBeNull();
-    expect(loadConfig({ GHL_PRIVATE_INTEGRATION_TOKEN: "t", GHL_LOCATION_ID: "l" }).ghl).toEqual({ token: "t", locationId: "l", timezone: "America/Los_Angeles" });
-    expect(loadConfig({}).booking).toEqual({ ghlCalendarId: "vc5JhcEjhKFs3MpJyj9p", slotMinutes: 15 });
-    expect(loadConfig({ BOOKING_SLOT_MINUTES: "30", BOOKING_GHL_CALENDAR_ID: "other" }).booking).toEqual({ ghlCalendarId: "other", slotMinutes: 30 });
-  });
-});

@@ -62,7 +62,7 @@ export default function App() {
           </button>
 
           {/* Nav Links Desktop */}
-          <nav className="hidden md:flex items-center space-x-10 text-sm tracking-wider font-medium uppercase text-[#11161B]/80">
+          <nav className="hidden xl:flex items-center space-x-10 text-sm tracking-wider font-medium uppercase text-[#11161B]/80">
             <button onClick={() => scrollToSection("about-sec")} className="hover:text-[#9C5F22] transition-colors duration-200 uppercase cursor-pointer">About</button>
             <button onClick={() => scrollToSection("lessons-sec")} className="hover:text-[#9C5F22] transition-colors duration-200 uppercase cursor-pointer">Fiddle Styles</button>
             <button onClick={() => scrollToSection("whos-it-for-sec")} className="hover:text-[#9C5F22] transition-colors duration-200 uppercase cursor-pointer">Who It's For</button>
@@ -71,7 +71,14 @@ export default function App() {
           </nav>
 
           {/* CTA Header Button */}
-          <div className="hidden md:flex items-center">
+          <div className="hidden xl:flex items-center gap-3">
+            <a
+              href="/signin"
+              className="border border-[#1D2A44] text-[#1D2A44] hover:bg-[#1D2A44] hover:text-white px-5 py-3 tracking-widest uppercase font-serif text-xs transition-colors duration-300 font-semibold rounded-sm whitespace-nowrap"
+              id="student-sign-in-btn"
+            >
+              Student Sign In
+            </a>
             <a
               href="/book"
               className="bg-[#1D2A44] hover:bg-[#9C5F22] text-white px-7 py-3 tracking-widest uppercase font-serif text-xs transition-colors duration-300 font-semibold shadow-sm rounded-sm flex items-center gap-1.5"
@@ -84,7 +91,7 @@ export default function App() {
 
           {/* Mobile Hamburger Toggle */}
           <button
-            className="md:hidden text-[#1D2A44] p-1"
+            className="xl:hidden text-[#1D2A44] p-1"
             onClick={() => setIsMobileMenuOpen(!isMobileMenuOpen)}
             aria-label={isMobileMenuOpen ? "Close navigation menu" : "Open navigation menu"}
             aria-expanded={isMobileMenuOpen}
@@ -105,7 +112,7 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.2 }}
-            className="md:hidden fixed inset-0 top-20 bg-[#11161B]/30 z-30"
+            className="xl:hidden fixed inset-0 top-20 bg-[#11161B]/30 z-30"
             onClick={() => setIsMobileMenuOpen(false)}
             aria-hidden="true"
           />
@@ -117,7 +124,7 @@ export default function App() {
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -20 }}
             transition={{ duration: 0.2 }}
-            className="md:hidden bg-[#F9F8F5]/95 backdrop-blur-lg fixed top-20 left-0 right-0 border-b border-[#11161B]/10 z-40 p-6 flex flex-col space-y-5 shadow-lg tracking-wider font-semibold uppercase text-[#11161B]/90"
+            className="xl:hidden bg-[#F9F8F5]/95 backdrop-blur-lg fixed top-20 left-0 right-0 border-b border-[#11161B]/10 z-40 p-6 flex flex-col space-y-5 shadow-lg tracking-wider font-semibold uppercase text-[#11161B]/90"
             id="mobile-nav-drawer"
             aria-label="Mobile navigation"
           >
@@ -126,6 +133,13 @@ export default function App() {
             <button onClick={() => scrollToSection("whos-it-for-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">Who It's For</button>
             <button onClick={() => scrollToSection("rates-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">Rates</button>
             <button onClick={() => scrollToSection("studio-sec")} className="text-left py-2 hover:text-[#9C5F22] border-b border-[#11161B]/5">The Studio</button>
+            <a
+              href="/signin"
+              className="border border-[#1D2A44] text-[#1D2A44] text-center py-4 text-xs tracking-widest font-bold hover:bg-[#1D2A44] hover:text-white transition-colors rounded-sm"
+              id="student-sign-in-mobile-btn"
+            >
+              STUDENT SIGN IN
+            </a>
             <a
               href="/book"
               className="bg-[#1D2A44] text-white text-center py-4 text-xs tracking-widest font-bold inline-block hover:bg-[#9C5F22] transition-colors rounded-sm flex items-center justify-center gap-1.5"
