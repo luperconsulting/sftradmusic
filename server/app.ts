@@ -467,7 +467,7 @@ export function createApp(deps: Deps) {
     let policy: DashboardResponse["policy"] = null;
     let referrals: DashboardResponse["referrals"] = null;
     // One failed read mustn't take the rest down with it. A null section shows as "unavailable".
-    const soft = (what: string) => (e: unknown) => console.error(`[api] ${what} unavailable`, e instanceof Error ? e.message : "");
+    const soft = (what: string) => (e: unknown) => console.error(`[api] dashboard: ${what} unavailable: ${e instanceof Error ? e.message : "unknown error"}`);
     await Promise.all([
       store.listLessons({ studentIds: [student.id] }).then((lessons) => {
         ({ upcoming, history } = splitLessons(lessons, now()));
@@ -727,10 +727,12 @@ export function createApp(deps: Deps) {
       store.listAssignments(student.id),
       store.creditBalances([student.id]),
     ]);
+    // A failed section shows as unavailable in the UI; the real cause goes to the server log.
+    const logged = (what: string) => (e: unknown) => { console.error(`[api] teacher profile: ${what} unavailable: ${e instanceof Error ? e.message : "unknown error"}`); return null; };
     const [lessons, billing, referrals] = await Promise.all([
-      store.listLessons({ studentIds: [student.id] }).then((rows) => rows.map(toLessonDTO)).catch(() => null),
-      getStudentBilling(store, student.id).catch(() => null),
-      referralPanel(store, student.id).catch(() => null),
+      store.listLessons({ studentIds: [student.id] }).then((rows) => rows.map(toLessonDTO)).catch(logged("lessons")),
+      getStudentBilling(store, student.id).catch(logged("billing")),
+      referralPanel(store, student.id).catch(logged("referrals")),
     ]);
     return { student: publicStudent(student), notes, videos, assignments, lessons, billing, packageLessons: credits[student.id] ?? 0, referrals };
   }));

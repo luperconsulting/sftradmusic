@@ -450,6 +450,7 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
         method: input.method, amount_cents: input.amountCents, note: input.note,
       }).select("*").single();
       if (isUniqueViolation(error)) return null;
+      if (needsMigration(error)) throw new ApiError(503, "migration_required", "Payment reports need a database update first (migration 0007).");
       return toPaymentReport(must({ data, error }));
     },
     async getPaymentReport(id) {
@@ -462,7 +463,9 @@ export function createSupabaseStore(url: string, serviceRoleKey: string, bucket:
       if (query.studentIds) q = q.in("student_id", query.studentIds);
       if (query.invoiceIds) q = q.in("invoice_id", query.invoiceIds);
       if (query.status) q = q.eq("status", query.status);
-      return (must(await q) as any[]).map(toPaymentReport);
+      const res = await q;
+      if (needsMigration(res.error)) throw new Error(`store: payment_reports is missing (apply supabase/migrations/0007_payment_reports.sql): ${res.error?.message ?? ""}`);
+      return (must(res) as any[]).map(toPaymentReport);
     },
     async reviewPaymentReport(id, input) {
       const rows = must(await db.from("payment_reports").update({

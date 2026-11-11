@@ -81,9 +81,23 @@ export async function getStudentBilling(store: Pick<PortalStore, "listInvoices" 
   const invoices = await store.listInvoices({ studentIds: [studentId], includeDrafts: false });
   const [payments, reports] = await Promise.all([
     store.listPayments(invoices.map((i) => i.id)),
-    store.listPaymentReports({ invoiceIds: invoices.map((i) => i.id), status: "pending" }),
+    pendingReports(store, invoices.map((i) => i.id)),
   ]);
   return buildBilling(invoices, payments, cardPayments, reports.map(reportDTO));
+}
+
+/**
+ * Open "I've sent it" reports for these invoices. They only decorate invoices, so a failed read (for example
+ * migration 0007 not applied yet) is logged with its real cause and treated as "no reports"; it must never take
+ * the balance, invoice history or the teacher's invoice list down with it.
+ */
+export async function pendingReports(store: Pick<PortalStore, "listPaymentReports">, invoiceIds: string[]) {
+  try {
+    return await store.listPaymentReports({ invoiceIds, status: "pending" });
+  } catch (e) {
+    console.error(`[billing] payment reports unavailable, showing invoices without them: ${e instanceof Error ? e.message : "unknown error"}`);
+    return [];
+  }
 }
 
 const reportDTO = (r: { id: string; invoiceId: string; method: string; amountCents: number | null; note: string; status: PaymentReportDTO["status"]; createdAt: string; reviewedAt: string | null }): PaymentReportDTO => ({
@@ -92,7 +106,7 @@ const reportDTO = (r: { id: string; invoiceId: string; method: string; amountCen
 
 /** Invoices with their open payment report, for the teacher's list. */
 export async function invoicesWithReports(store: Pick<PortalStore, "listPaymentReports">, invoices: InvoiceRecord[]) {
-  const reports = await store.listPaymentReports({ invoiceIds: invoices.map((i) => i.id), status: "pending" });
+  const reports = await pendingReports(store, invoices.map((i) => i.id));
   return invoices.map((i) => toInvoiceDTO(i, (() => { const r = reports.find((x) => x.invoiceId === i.id); return r ? reportDTO(r) : null; })()));
 }
 
