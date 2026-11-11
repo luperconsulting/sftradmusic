@@ -83,6 +83,8 @@ export function useTeacherVM(screen: string): VM {
   const [invQ, setInvQ] = useState("");
   const [note, setNote] = useState(emptyNote());
   const [savedAt, setSavedAt] = useState<string | null>(null);
+  // Inline result under the note editor's buttons (the toast alone was easy to miss).
+  const [noteNotice, setNoteNotice] = useState<{ kind: "sending" | "ok" | "error"; text: string } | null>(null);
   const [aTitle, setATitle] = useState("");
   const [aForm, setAForm] = useState({ instructions: "", videoId: "", lessonDate: "", dueDate: "" });
   const [assignees, setAssignees] = useState<Record<string, boolean>>({});
@@ -133,6 +135,23 @@ export function useTeacherVM(screen: string): VM {
     setLoading(false);
   }, []);
   useEffect(() => { void loadCore(); }, [loadCore]);
+  // Lists can change from other places (a student books, another tab publishes a note), and a teacher session
+  // now survives reloads, so the roster and overview are re-read when their screen opens and when this tab
+  // comes back into focus.
+  const refreshRoster = useCallback(async () => {
+    await Promise.allSettled([
+      api("/teacher/students").then((r) => setStudents(r.students)),
+      api("/teacher/overview").then(setOverview),
+    ]);
+  }, []);
+  useEffect(() => {
+    if (screen === "students" || screen === "overview") void refreshRoster();
+  }, [screen, refreshRoster]);
+  useEffect(() => {
+    const onVisible = () => { if (document.visibilityState === "visible") void refreshRoster(); };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refreshRoster]);
   const studioToForm = (r: { settings: any; hours: { weekday: number; startMinute: number; endMinute: number }[] }): StudioForm => ({
     holdHours: hoursText((r.settings?.holdWindowMinutes ?? 1440) / 60),
     rescheduleHours: String(r.settings?.rescheduleNoticeHours ?? 24),
@@ -212,7 +231,9 @@ export function useTeacherVM(screen: string): VM {
   const q = query.trim().toLowerCase();
   const nextShort = (iso: string | null) => (iso ? `${fmt(iso, { weekday: "short", month: "short", day: "numeric" }).replace(",", "")} · ${clock(iso)}` : "—");
   const filteredStudents = students.filter((s) => !q || s.fullName.toLowerCase().includes(q) || (s.guardianName ?? "").toLowerCase().includes(q)).map((s) => ({
-    name: s.fullName, style: s.styleLine, parent: s.guardianName ?? "—", format: s.format, next: nextShort(s.nextLesson), notes: s.noteCount, videos: s.videoCount, assign: s.assignmentCount, packages: s.packageLessons ?? 0,
+    name: s.fullName, style: s.styleLine, parent: s.guardianName ?? "—", format: s.format,
+    next: s.nextLesson ? `${nextShort(s.nextLesson)}${s.nextLessonStatus === "pending_payment" ? " · pending payment" : ""}${(s.upcomingCount ?? 0) > 1 ? ` (+${(s.upcomingCount ?? 0) - 1} more)` : ""}` : "—",
+    notes: s.noteCount, videos: s.videoCount, assign: s.assignmentCount, packages: s.packageLessons ?? 0,
     initials: initialsOf(s.fullName), icon: s.format === "Zoom" ? "ph ph-video-camera" : "ph ph-map-pin", open: () => navigate(`/teacher/students/${s.id}`),
   }));
 
@@ -288,6 +309,12 @@ export function useTeacherVM(screen: string): VM {
     const saved: NoteDTO = note.id ? await api(`/teacher/notes/${note.id}`, { method: "PUT", body: noteBody() }) : await api("/teacher/notes", { method: "POST", body: noteBody() });
     setNote((n) => ({ ...n, id: saved.id }));
     return saved;
+  };
+  // Put the saved note into the open student's list at once, then re-read the profile and the roster counts.
+  const showNoteInList = (saved: NoteDTO) => {
+    setProfile((p) => (p && p.student.id === saved.studentId ? { ...p, notes: [saved, ...p.notes.filter((n) => n.id !== saved.id)].sort((a, b) => b.lessonDate.localeCompare(a.lessonDate)) } : p));
+    void loadProfile(saved.studentId);
+    void refreshRoster();
   };
   const noteStudent = students.find((s) => s.id === note.studentId);
 
@@ -515,25 +542,42 @@ export function useTeacherVM(screen: string): VM {
     viewAsStudent: () => st && navigate(`/portal?preview=${st.id}`),
     // Notes editor
     noteForm: note,
-    noteField: (k: string) => (e: any) => setNote((n) => ({ ...n, [k]: e.target.value, ...(k === "studentId" ? { id: null, status: "draft" as const, publishedAt: null } : {}) })),
+    noteField: (k: string) => (e: any) => {
+      if (k === "studentId") setNoteNotice(null);
+      setNote((n) => ({ ...n, [k]: e.target.value, ...(k === "studentId" ? { id: null, status: "draft" as const, publishedAt: null } : {}) }));
+    },
     studentOptions: students.map((s) => ({ id: s.id, name: s.fullName })),
     noteDraftLine: `Not visible to ${noteStudent?.isMinor ? "the family" : "the student"}.${savedAt ? ` Saved ${savedAt}.` : ""}`,
     notePublishedLine: note.publishedAt ? `Published · ${fmt(note.publishedAt, { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" })}` : "Published",
     publishLabel: note.status === "published" ? "Published" : "Publish to Student",
     saveDraft: guard(async () => {
       if (screen === "notes") {
-        await persistNote();
+        const saved = await persistNote();
         setSavedAt(clock(new Date().toISOString()));
+        setNoteNotice({ kind: "ok", text: `Draft saved at ${clock(new Date().toISOString())}. Only you can see it.` });
+        showNoteInList(saved);
         flash("Draft saved. Private to you.");
       } else flash("Assignments are saved when you assign them.");
     }),
-    pickPublished: guard(async () => {
-      const saved = await persistNote();
-      const published: NoteDTO = await api(`/teacher/notes/${saved.id}/publish`, { method: "POST" });
-      setNote((n) => ({ ...n, status: "published", publishedAt: published.publishedAt }));
-      flash("Note published.");
-      if (note.studentId) void loadProfile(note.studentId);
-    }),
+    noteNotice,
+    pickPublished: async () => {
+      if (busy.current) return;
+      busy.current = true;
+      setNoteNotice({ kind: "sending", text: "Publishing…" });
+      try {
+        const saved = await persistNote();
+        const published: NoteDTO = await api(`/teacher/notes/${saved.id}/publish`, { method: "POST" });
+        setNote((n) => ({ ...n, status: "published", publishedAt: published.publishedAt }));
+        const who = noteStudent ? (noteStudent.isMinor ? `${noteStudent.firstName}'s family` : noteStudent.firstName) : "the student";
+        setNoteNotice({ kind: "ok", text: `Published. ${who} can see this note now.` });
+        showNoteInList(published);
+        flash("Note published.");
+      } catch (e) {
+        setNoteNotice({ kind: "error", text: errorText(e) });
+      } finally {
+        busy.current = false;
+      }
+    },
     // Videos
     libVideos, libCount: `${libVideos.length} videos`, libCols: assignVideo && !vp.mobile ? "minmax(0,1fr) 320px" : "minmax(0,1fr)",
     catChips: CATS.map((c) => ({ label: c, pick: () => setCat(c), bg: c === cat ? "#1D2A44" : "transparent", color: c === cat ? "#fff" : "rgba(17,22,27,.7)", border: c === cat ? "#1D2A44" : "rgba(17,22,27,.15)" })),

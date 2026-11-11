@@ -121,6 +121,10 @@ export async function demoApi(path: string, opts: { method?: string; body?: unkn
   if (p === "/teacher/invitations") return { invitations: [{ id: "x1", name: "Sample Parent", email: "parent@example.com", studentName: "Sample Student", status: "accepted", method: "email", sentAt: iso(-3), expiresAt: null, accountId: null }, { id: "x2", name: "Another Parent", email: "another@example.com", studentName: "Example Student", status: "code_issued", method: "code", sentAt: iso(-1), expiresAt: iso(6), accountId: null }] };
   if (p === "/teacher/settings") return { integrations: { supabase: false, storage: false, googleCalendar: false, email: false }, cardPayments: false, safeMode: true };
   if (p.endsWith("/playback")) throw new Error("Sample mode: no video file is connected.");
+  // Notes: save and publish echo the note back so the editor's flow can be reviewed.
+  if (p === "/teacher/notes" && opts.method === "POST") return { ...(opts.body as any), id: crypto.randomUUID(), status: "draft", publishedAt: null };
+  if (/^\/teacher\/notes\/[^/]+$/.test(p) && opts.method === "PUT") return { ...(opts.body as any), id: p.split("/")[3], status: "draft", publishedAt: null };
+  if (/^\/teacher\/notes\/[^/]+\/publish$/.test(p) && opts.method === "POST") return { id: p.split("/")[3], studentId: A, lessonDate: day(0), title: "Sample note", summary: "", technique: "", practice: "", goals: "", prep: "", status: "published", publishedAt: new Date().toISOString() };
   if (opts.method === "POST" || opts.method === "PUT") throw new Error("Sample mode: nothing is saved or sent.");
   throw new Error("Sample mode: not available.");
 }

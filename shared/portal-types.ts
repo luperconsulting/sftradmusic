@@ -254,6 +254,10 @@ export interface GhlContactOption {
 export interface TeacherStudentRow extends StudentSummary {
   email: string | null;
   nextLesson: string | null;
+  /** The next lesson's state: held lessons (waiting for payment) count as upcoming. */
+  nextLessonStatus?: "confirmed" | "pending_payment" | null;
+  /** Upcoming lessons, confirmed or held. */
+  upcomingCount?: number;
   noteCount: number;
   videoCount: number;
   assignmentCount: number;

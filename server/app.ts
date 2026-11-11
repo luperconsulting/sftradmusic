@@ -687,12 +687,22 @@ export function createApp(deps: Deps) {
       store.creditBalances(ids),
       store.listLessons({ studentIds: ids, from: new Date(now()).toISOString(), statuses: ["scheduled", "pending_payment"] }),
     ]);
+    // Held (pending payment) lessons count as upcoming; the row says which kind the next one is.
     const nextByStudent: Record<string, string> = {};
-    for (const l of lessons) nextByStudent[l.studentId] ??= new Date(l.startsAt).toISOString();
+    const nextStatus: Record<string, "confirmed" | "pending_payment"> = {};
+    const upcomingCount: Record<string, number> = {};
+    for (const l of lessons) {
+      upcomingCount[l.studentId] = (upcomingCount[l.studentId] ?? 0) + 1;
+      if (nextByStudent[l.studentId]) continue;
+      nextByStudent[l.studentId] = new Date(l.startsAt).toISOString();
+      nextStatus[l.studentId] = l.status === "pending_payment" ? "pending_payment" : "confirmed";
+    }
     const rows: TeacherStudentRow[] = students.map((s) => ({
       ...publicStudent(s),
       email: s.email,
       nextLesson: nextByStudent[s.id] ?? null,
+      nextLessonStatus: nextStatus[s.id] ?? null,
+      upcomingCount: upcomingCount[s.id] ?? 0,
       noteCount: counts[s.id]?.notes ?? 0,
       videoCount: counts[s.id]?.videos ?? 0,
       assignmentCount: counts[s.id]?.assignments ?? 0,
