@@ -1,26 +1,65 @@
-// Server-only settings for the public booking widget. Nothing here is sent to the browser.
-import type { GhlConfig } from "./integrations/ghl.js";
+// Server-only settings for the public booking page. Nothing here is sent to the browser.
 import type { GoogleCalendarConfig } from "./integrations/googleCalendar.js";
+import { smtpFromEnv, type SmtpConfig } from "./mail/mailer.js";
+import { parseWeeklyHours, type WeeklyHours } from "./services/availability.js";
+
+export const DEFAULT_BOOKING_HOURS = "mon-fri 10:00-18:00";
+
+export interface BookingConfig {
+  /** Weekly intro-call hours in Los Angeles time. Null when BOOKING_HOURS can't be read. */
+  hours: WeeklyHours | null;
+  slotMinutes: number;
+  /** No call can be booked sooner than this. */
+  minNoticeMinutes: number;
+  /** No call can be booked further out than this. */
+  maxDaysAhead: number;
+  /** The Google Calendar intro calls are written to. */
+  calendarId: string | null;
+  /** Who gets the "new intro call" notice. */
+  notifyEmail: string | null;
+  /** How the call happens, shown in the confirmation email and invite. */
+  meetingDetails: string;
+  /** Outside production, client emails go only to the test allowlist and titles start with "[Preview]". */
+  production: boolean;
+  testEmailAllowlist: string[];
+}
 
 export interface ServerConfig {
-  /** GoHighLevel, read-only: the booking calendar's open hours and rules. Null until the token and location are set. */
-  ghl: GhlConfig | null;
-  /** Google Calendar free/busy via Workload Identity Federation. Null until every setting is present. */
+  /** Google Calendar via Workload Identity Federation. Null until every setting is present. */
   google: GoogleCalendarConfig | null;
-  /** Which GoHighLevel calendar's rules give the base times, and the slot length. */
-  booking: { ghlCalendarId: string; slotMinutes: number };
+  /** Gmail SMTP with an app password. Null until SMTP_USER and SMTP_PASS are set. */
+  smtp: SmtpConfig | null;
+  booking: BookingConfig;
+}
+
+const positive = (raw: string | undefined, fallback: number) => (Number(raw) > 0 ? Number(raw) : fallback);
+
+export function isProduction(env: Record<string, string | undefined>) {
+  return env.VERCEL_ENV ? env.VERCEL_ENV === "production" : env.NODE_ENV === "production";
 }
 
 export function loadConfig(env: Record<string, string | undefined> = process.env): ServerConfig {
-  const token = env.GHL_PRIVATE_INTEGRATION_TOKEN?.trim();
-  const locationId = env.GHL_LOCATION_ID?.trim();
+  const google = googleFromEnv(env);
+  const smtp = smtpFromEnv(env);
+  let hours: WeeklyHours | null = null;
+  try {
+    hours = parseWeeklyHours(env.BOOKING_HOURS?.trim() || DEFAULT_BOOKING_HOURS);
+  } catch (e) {
+    console.error(`[booking] BOOKING_HOURS can't be read, so no times are offered: ${e instanceof Error ? e.message : "unknown"}`);
+  }
   return {
-    ghl: token && locationId ? { token, locationId, timezone: env.GHL_TIMEZONE || "America/Los_Angeles" } : null,
-    google: googleFromEnv(env),
+    google,
+    smtp,
     booking: {
-      // The intro-call calendar the booking page has always used. Its open hours and rules stay in GoHighLevel.
-      ghlCalendarId: env.BOOKING_GHL_CALENDAR_ID || "vc5JhcEjhKFs3MpJyj9p",
-      slotMinutes: Number(env.BOOKING_SLOT_MINUTES) > 0 ? Number(env.BOOKING_SLOT_MINUTES) : 15,
+      hours,
+      slotMinutes: positive(env.BOOKING_SLOT_MINUTES, 15),
+      minNoticeMinutes: positive(env.BOOKING_MIN_NOTICE_HOURS, 4) * 60,
+      maxDaysAhead: positive(env.BOOKING_MAX_DAYS_AHEAD, 60),
+      calendarId: env.BOOKING_CALENDAR_ID?.trim() || google?.calendarIds[0] || null,
+      notifyEmail: env.BOOKING_NOTIFY_EMAIL?.trim() || smtp?.user || null,
+      meetingDetails: env.BOOKING_MEETING_DETAILS?.trim() || "I'll call you at the number you gave, or send you a video link before the call if you didn't leave one.",
+      production: isProduction(env),
+      testEmailAllowlist: (env.BOOKING_TEST_EMAIL_ALLOWLIST ?? "luperdev@gmail.com").split(",").map((s) => s.trim().toLowerCase()).filter(Boolean),
     },
   };
 }

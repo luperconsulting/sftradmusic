@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState, type CSSProperties } from "react";
 import "./booking-widget.css";
 
-// The approved booking widget, fed by /api/booking/availability: GoHighLevel's intro-call rules minus Google
-// Calendar busy times. This phase only shows open times. Nothing is booked, saved or sent.
+// The approved booking widget. Open times come from /api/booking/availability (weekly intro-call hours minus
+// Google Calendar busy times). Confirm posts to /api/booking/intro, which books the call on Google Calendar and
+// emails the client and the studio.
 const HOST_TZ = "America/Los_Angeles";
 const TIMEZONES: [string, string][] = [
   ["America/Los_Angeles", "Pacific (PT)"], ["America/Denver", "Mountain (MT)"], ["America/Chicago", "Central (CT)"], ["America/New_York", "Eastern (ET)"],
@@ -30,8 +31,10 @@ export default function BookingWidget() {
   const [tz, setTz] = useState(browserZone);
   const [selDate, setSelDate] = useState<string | null>(null);
   const [selSlot, setSelSlot] = useState<string | null>(null);
-  const [step, setStep] = useState<1 | 2>(1);
-  const [form, setForm] = useState({ name: "", email: "", phone: "", level: "new", notes: "" });
+  const [step, setStep] = useState<1 | 2 | 3>(1);
+  const [form, setForm] = useState({ name: "", email: "", phone: "", level: "new", notes: "", website: "" });
+  const [sending, setSending] = useState(false);
+  const [booked, setBooked] = useState<{ start: string; confirmationSent: boolean } | null>(null);
   const [errors, setErrors] = useState<{ name?: boolean; email?: boolean }>({});
   const [touched, setTouched] = useState(false);
   const [notice, setNotice] = useState("");
@@ -76,14 +79,41 @@ export default function BookingWidget() {
     setForm(next);
     if (touched) setErrors(validate(next));
   };
-  const submit = (e?: { preventDefault(): void }) => {
+  const submit = async (e?: { preventDefault(): void }) => {
     e?.preventDefault();
+    if (sending || !selSlot) return;
     const found = validate(form);
     setErrors(found);
     setTouched(true);
     if (Object.keys(found).length) return;
-    // Booking is the next phase. Saying "booked" here would be untrue, so nothing is sent.
-    setNotice("Online booking isn't switched on yet, so this call hasn't been booked and nothing was sent.");
+    setSending(true);
+    setNotice("");
+    try {
+      const res = await fetch("/api/booking/intro", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ start: selSlot, ...form, timeZone: tz }),
+      });
+      const body = await res.json().catch(() => null);
+      if (res.ok && body?.booked) {
+        setBooked({ start: body.start ?? selSlot, confirmationSent: body.confirmationSent !== false });
+        setStep(3);
+        return;
+      }
+      if (res.status === 409) {
+        // Someone else got there first: back to the times, refreshed.
+        setSelSlot(null);
+        setStep(1);
+        setReload((n) => n + 1);
+        setNotice(body?.error?.message ?? "That time was just taken. Please pick another.");
+        return;
+      }
+      setNotice(body?.error?.message ?? "Your call couldn't be booked right now. Please try again shortly.");
+    } catch {
+      setNotice("Your call couldn't be booked right now. Please check your connection and try again.");
+    } finally {
+      setSending(false);
+    }
   };
 
   const lead = new Date(Date.UTC(view.y, view.m, 1)).getUTCDay();
@@ -155,6 +185,7 @@ export default function BookingWidget() {
                     {TIMEZONES.map(([z, label]) => <option key={z} value={z}>{label}</option>)}
                   </select>
                 </div>
+                {notice && step === 1 && <p role="alert" style={{ fontSize: 13, color: "var(--color-accent-700)" }}>{notice}</p>}
                 {avail.status === "loading" && <p role="status" className="text-muted" style={{ fontSize: 13 }}>Checking open times…</p>}
                 {avail.status === "error" && (
                   <div role="alert" style={{ fontSize: 13, color: "var(--color-accent-700)" }}>
@@ -176,7 +207,7 @@ export default function BookingWidget() {
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-3)", padding: "var(--space-4) var(--space-6)", borderTop: "1px solid var(--color-divider)", flexWrap: "wrap" }}>
               <span style={{ fontSize: 13, color: "var(--color-neutral-700)" }}>{selSlot ? `${longDate(selDate)} · ${fmtTime(selSlot)} ${tzShort}` : selDate ? "Now pick a time." : "Pick a day and time to continue."}</span>
-              <button className="btn btn-primary" disabled={!selSlot} onClick={() => setStep(2)}>Continue</button>
+              <button className="btn btn-primary" disabled={!selSlot} onClick={() => { setNotice(""); setStep(2); }}>Continue</button>
             </div>
           </>
         )}
@@ -219,14 +250,35 @@ export default function BookingWidget() {
                   <label htmlFor="bw-notes">Anything you'd like to talk through?</label>
                   <textarea id="bw-notes" className="input" placeholder="Tunes or traditions you're drawn to, goals, questions about lessons…" value={form.notes} onChange={setField("notes")} />
                 </div>
-                {notice && <p role="status" style={{ fontSize: 13, color: "var(--color-accent-700)" }}>{notice}</p>}
+                {/* Hidden from people and screen readers; bots that fill it in are ignored by the server. */}
+                <div aria-hidden="true" style={{ position: "absolute", left: "-10000px", width: 1, height: 1, overflow: "hidden" }}>
+                  <label htmlFor="bw-website">Website</label>
+                  <input id="bw-website" type="text" tabIndex={-1} autoComplete="off" value={form.website} onChange={setField("website")} />
+                </div>
+                {notice && <p role="alert" style={{ fontSize: 13, color: "var(--color-accent-700)" }}>{notice}</p>}
               </form>
             </div>
             <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "var(--space-3)", padding: "var(--space-4) var(--space-6)", borderTop: "1px solid var(--color-divider)", flexWrap: "wrap" }}>
-              <button className="btn btn-secondary" onClick={() => { setNotice(""); setStep(1); }}>Back</button>
-              <button className="btn btn-primary" onClick={() => submit()}>Confirm call</button>
+              <button className="btn btn-secondary" disabled={sending} onClick={() => { setNotice(""); setStep(1); }}>Back</button>
+              <button className="btn btn-primary" disabled={sending} aria-busy={sending} onClick={() => submit()}>{sending ? "Booking…" : "Confirm call"}</button>
             </div>
           </>
+        )}
+
+        {step === 3 && booked && (
+          <div data-screen-label="Confirmed" role="status" style={{ padding: "var(--space-8) var(--space-6)", display: "grid", gap: "var(--space-3)", justifyItems: "center", textAlign: "center" }}>
+            <div style={{ width: 48, height: 48, borderRadius: "50%", display: "grid", placeItems: "center", background: "color-mix(in srgb, var(--color-accent) 12%, transparent)", color: "var(--color-accent-700)" }}>
+              <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+            </div>
+            <h3 style={{ fontSize: 26, fontWeight: 400 }}>You're booked</h3>
+            <p style={{ fontSize: 15 }}>{new Intl.DateTimeFormat("en-US", { weekday: "long", month: "long", day: "numeric", timeZone: tz }).format(new Date(booked.start))} · {fmtTime(booked.start)} {tzShort} · {minutes} minutes</p>
+            <p className="text-muted" style={{ fontSize: 14, maxWidth: 460 }}>
+              {booked.confirmationSent
+                ? `A confirmation with a calendar invite is on its way to ${form.email}.`
+                : "Your call is booked, but the confirmation email didn't go out. I'll be in touch to confirm."}
+            </p>
+            <a className="btn btn-secondary" href="/" style={{ marginTop: "var(--space-2)" }}>Back to site</a>
+          </div>
         )}
       </div>
     </div>
